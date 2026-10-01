@@ -198,13 +198,32 @@ done
 mkdir -p "$R/etc/systemd/system"
 ln -sfn /usr/lib/systemd/system/graphical.target "$R/etc/systemd/system/default.target"
 
-# User-level service masking (steamos-manager requires tracefs not in 7.2.0; steamvr services)
+# User-level service masking (steamvr services: no SteamVR hardware on Odin 3).
+# steamos-manager needs tracefs (/sys/kernel/tracing): the prebuilt ROCKNIX
+# kernel (extract-rocknix.sh) doesn't have it, so it exits EPERM trying to
+# create that path and crash-loops. kernel-sm8750/build.sh's from-source
+# kernel does (kernel-common/steamos.config: CONFIG_FTRACE=y), confirmed
+# booting and running steamos-manager cleanly on a real Odin 3. Only mask it
+# when the staged kernel actually lacks tracefs -- check its own saved
+# .config (only kernel-common/build.sh's install_output() writes one;
+# extract-rocknix.sh has nothing to check here, so this is conservative:
+# unknown/prebuilt kernels keep the mask).
 mkdir -p "$R/etc/systemd/user"
 for usvc in steamvr.service steamvr-proxmicmute.service steamvr-v4l2cam.service \
-            steamos-manager.service steamos-manager-session-cleanup.service \
             sm8550-audio-pipewire.service; do
   ln -sfn /dev/null "$R/etc/systemd/user/${usvc}"
 done
+KERNEL_HAS_TRACEFS=0
+KCFG="$(ls "$KOUT"/config-* 2>/dev/null | head -1)"
+[[ -n "$KCFG" ]] && grep -q '^CONFIG_FTRACE=y' "$KCFG" && KERNEL_HAS_TRACEFS=1
+if [[ "$KERNEL_HAS_TRACEFS" == 1 ]]; then
+  log "== steamos-manager: left enabled (kernel has CONFIG_FTRACE=y)"
+else
+  log "== steamos-manager: masked (no tracefs in this kernel)"
+  for usvc in steamos-manager.service steamos-manager-session-cleanup.service; do
+    ln -sfn /dev/null "$R/etc/systemd/user/${usvc}"
+  done
+fi
 rm -f "$R/etc/systemd/user/wireplumber.service" "$R/etc/systemd/user/sm8550-volume-keys.service" 2>/dev/null || true
 
 # Volume keys daemon for Odin 3 (handles gpio-keys VOLUP and pmic_resin VOLDOWN)
@@ -323,6 +342,18 @@ if [[ -x "${SCRIPT_DIR}/install-inputplumber-sm8550.sh" ]]; then
 fi
 cp -r --no-preserve=mode,ownership "$SM8750_OVL/." "$R/"
 chmod 0755 "$R/usr/lib/steamos/sm8750-audio-setup" 2>/dev/null || true
+
+# Performance Overlay (mangoapp): sm8750-overlay/usr/lib/environment.d/
+# 60-odin3-gamescope.conf ships GAMESCOPE_MANGOAPP=0 because mangoapp used to
+# shut the Odin 3 down when turned on in a game -- traced to the kernel
+# missing tracefs (mangoapp reads Adreno busy/memory through it, same as
+# steamos-manager above). Flip it on only when this build's kernel actually
+# has tracefs; confirmed not crashing on real hardware there.
+if [[ "$KERNEL_HAS_TRACEFS" == 1 ]]; then
+  log "== Performance Overlay (mangoapp): enabling (kernel has tracefs)"
+  sed -i 's/^GAMESCOPE_MANGOAPP=0$/GAMESCOPE_MANGOAPP=1/' \
+    "$R/usr/lib/environment.d/60-odin3-gamescope.conf"
+fi
 
 # Our own Mesa (scripts/build-mesa.sh, MESA_STACK=/work/mesa/out): the same
 # 26.2.3 stack as the 8 Gen 2 image, with the Adreno 830 ids added (patches/
