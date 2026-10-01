@@ -131,13 +131,13 @@ install_libiio() {
     -DWITH_AIO=OFF \
     -DWITH_HWMON=ON
   cmake --build "$bld" -j"$(nproc)"
-  DESTDIR="$R" cmake --install "$bld"
   if command -v file >/dev/null; then
     local built_so
     built_so="$(readlink -f "$bld/libiio.so")"
     file "$built_so" | grep -q "ARM aarch64" \
       || die "built libiio ($built_so) is not aarch64: $(file "$built_so")"
   fi
+  DESTDIR="$R" cmake --install "$bld"
   if [[ -e "${R}/usr/lib/aarch64-linux-gnu/libiio.so.0" && ! -e "${R}/usr/lib/libiio.so.0" ]]; then
     ln -sfn aarch64-linux-gnu/libiio.so.0 "${R}/usr/lib/libiio.so.0"
   fi

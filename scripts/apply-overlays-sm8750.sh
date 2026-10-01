@@ -210,7 +210,7 @@ for usvc in steamvr.service steamvr-proxmicmute.service steamvr-v4l2cam.service 
   ln -sfn /dev/null "$R/etc/systemd/user/${usvc}"
 done
 KERNEL_HAS_TRACEFS=0
-KCFG="$(ls "$KOUT"/config-* 2>/dev/null | head -1)"
+KCFG="$(ls "$KOUT"/config-* 2>/dev/null | head -1 || true)"
 [[ -n "$KCFG" ]] && grep -q '^CONFIG_FTRACE=y' "$KCFG" && KERNEL_HAS_TRACEFS=1
 if [[ "$KERNEL_HAS_TRACEFS" == 1 ]]; then
   log "== steamos-manager: enabled (kernel has CONFIG_FTRACE=y)"
