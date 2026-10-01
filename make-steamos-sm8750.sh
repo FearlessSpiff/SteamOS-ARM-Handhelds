@@ -79,17 +79,9 @@ STEAMOS_BUILD="${STEAMOS_BUILD:-20260925.6175226}"
 STEAMOS_BUNDLE="deckard-${STEAMOS_BUILD}-0.5.0"
 STEAMOS_URL="https://steamdeck-images.steamos.cloud/vr/${STEAMOS_BUILD}"
 
-# SM8750_KERNEL=prebuilt (default): ROCKNIX's released binary kernel
-#   (extract-rocknix.sh). No tracefs -- steamos-manager and the Performance
-#   Overlay stay masked/off (see apply-overlays-sm8750.sh).
-# SM8750_KERNEL=source: build from ROCKNIX's own patch stack + kernel.org
-#   source (kernel-sm8750/build.sh -> kernel-common/build.sh). Has tracefs
-#   (kernel-common/steamos.config), confirmed booting and running
-#   steamos-manager / the Performance Overlay on a real Odin 3. Needs a
-#   native aarch64 build host (build on the Odin 3 itself, or see
-#   kernel-common/build.sh's own cross-compile notes) and a sparse clone of
-#   ROCKNIX/distribution at kernel-sm8750/soc.env's ROCKNIX_REF next to this
-#   repo (see kernel-sm8750/soc.env for the default path).
+# SM8750_KERNEL=prebuilt (default): ROCKNIX's binary release, no tracefs.
+# SM8750_KERNEL=source: build via kernel-sm8750/build.sh, has tracefs.
+# Needs a native aarch64 host (e.g. the Odin 3 itself).
 ensure_kernel() {
   if [[ "${SM8750_KERNEL:-prebuilt}" == source ]]; then
     local kwork="${SM8750_KERNEL_WORK:-${WORKDIR}/kernel-sm8750-src}"

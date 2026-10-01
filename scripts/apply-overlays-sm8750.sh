@@ -10,12 +10,8 @@ R="${STEAMOS_ROOTFS:-${WORKDIR}/rootfs}"
 MOD="${ROOT}/external-and-mods"
 OVL="${ROOT}/steamos-overlay"
 SM8750_OVL="${ROOT}/sm8750-overlay"
-# KREL comes from KOUT's own directory name (same convention as the common
-# apply-overlays.sh: "$(basename "$KOUT")"), not a hardcoded "7.2.0" -- that
-# only matched extract-rocknix.sh's prebuilt kernel. kernel-sm8750/build.sh's
-# from-source kernel self-reports "7.2.0-sm8750-steamos" (LOCALVERSION) and
-# needs its modules installed under that exact name, since that's what the
-# booted kernel's `uname -r` (and so /usr/lib/modules/<uname -r>/) will be.
+# KREL from KOUT's dir name (as apply-overlays.sh does), not hardcoded: the
+# from-source kernel self-reports "7.2.0-sm8750-steamos", not "7.2.0".
 KOUT="$(readlink -f "${KERNEL_OUT:-${WORKDIR}/kernel-sm8750-release/7.2.0}")"
 KREL="$(basename "$KOUT")"
 STOCK="${R}/opt/stock-steamos"
@@ -204,16 +200,10 @@ done
 mkdir -p "$R/etc/systemd/system"
 ln -sfn /usr/lib/systemd/system/graphical.target "$R/etc/systemd/system/default.target"
 
-# User-level service masking (steamvr services: no SteamVR hardware on Odin 3).
-# steamos-manager needs tracefs (/sys/kernel/tracing): the prebuilt ROCKNIX
-# kernel (extract-rocknix.sh) doesn't have it, so it exits EPERM trying to
-# create that path and crash-loops. kernel-sm8750/build.sh's from-source
-# kernel does (kernel-common/steamos.config: CONFIG_FTRACE=y), confirmed
-# booting and running steamos-manager cleanly on a real Odin 3. Only mask it
-# when the staged kernel actually lacks tracefs -- check its own saved
-# .config (only kernel-common/build.sh's install_output() writes one;
-# extract-rocknix.sh has nothing to check here, so this is conservative:
-# unknown/prebuilt kernels keep the mask).
+# User-level service masking (steamvr: no SteamVR hardware on Odin 3).
+# steamos-manager needs tracefs; mask it only if the staged kernel's own
+# saved .config says it doesn't have it (only install_output() writes one,
+# so prebuilt/unknown kernels default to masked).
 mkdir -p "$R/etc/systemd/user"
 for usvc in steamvr.service steamvr-proxmicmute.service steamvr-v4l2cam.service \
             sm8550-audio-pipewire.service; do
@@ -305,19 +295,12 @@ fi
 # ---------------------------------------------------------------------------
 # 4b. Pin Turnip for the Performance Overlay (mangoapp)
 # ---------------------------------------------------------------------------
-# Same mechanism as the Frame (SM8650) image's gamescope-session: mangoapp is
-# GL via zink, and zink must run on the Turnip it was built against. The
-# Adreno 830 driver installed above swaps libvulkan_freedreno.so system-wide,
-# so a plain mangoapp would crash against the mismatched Turnip -- and
-# steamos-overlay/usr/lib/steamos/gamescope-session already knows this and
-# disables the overlay entirely (STEAM_USE_MANGOAPP=0) whenever this wrapper
-# is missing. Previously nothing installed it for sm8750, so the Performance
-# Overlay silently did nothing on every Odin 3 build.
-# Pin mangoapp's zink to a private copy of the Turnip it actually matches;
-# games keep using the system-wide one. When a custom matched Mesa stack
-# (MESA_STACK, below) replaces zink+Turnip together, no pin is needed -- that
-# block removes frame-turnip/the ICD again and the wrapper just runs mangoapp
-# unpinned.
+# Same mechanism as the SM8650 image's gamescope-session: mangoapp (zink)
+# must run on the Turnip it was built against, or it crashes. Without this
+# wrapper gamescope-session disables the overlay entirely -- nothing
+# installed it for sm8750 before, so it silently did nothing. MESA_STACK
+# below removes the pin again when it replaces zink+Turnip together (then
+# no pin is needed).
 log "== pin Turnip for the Performance Overlay"
 TURNIP_FOR_MANGOAPP="$R/usr/lib/libvulkan_freedreno.so"
 [[ -f "$STOCK/usr/lib/libvulkan_freedreno.so" ]] && TURNIP_FOR_MANGOAPP="$STOCK/usr/lib/libvulkan_freedreno.so"
@@ -349,12 +332,9 @@ fi
 cp -r --no-preserve=mode,ownership "$SM8750_OVL/." "$R/"
 chmod 0755 "$R/usr/lib/steamos/sm8750-audio-setup" 2>/dev/null || true
 
-# Performance Overlay (mangoapp): sm8750-overlay/usr/lib/environment.d/
-# 60-odin3-gamescope.conf ships GAMESCOPE_MANGOAPP=0 because mangoapp used to
-# shut the Odin 3 down when turned on in a game -- traced to the kernel
-# missing tracefs (mangoapp reads Adreno busy/memory through it, same as
-# steamos-manager above). Flip it on only when this build's kernel actually
-# has tracefs; confirmed not crashing on real hardware there.
+# 60-odin3-gamescope.conf ships GAMESCOPE_MANGOAPP=0 (mangoapp used to shut
+# the Odin 3 down -- same tracefs issue as steamos-manager). Enable only
+# when this kernel has it; confirmed stable on real hardware.
 if [[ "$KERNEL_HAS_TRACEFS" == 1 ]]; then
   log "== Performance Overlay (mangoapp): enabling (kernel has tracefs)"
   sed -i 's/^GAMESCOPE_MANGOAPP=0$/GAMESCOPE_MANGOAPP=1/' \
