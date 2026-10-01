@@ -278,6 +278,41 @@ if [[ -f "$SM8750_OVL/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json" ]]; the
 fi
 
 # ---------------------------------------------------------------------------
+# 4b. Pin Turnip for the Performance Overlay (mangoapp)
+# ---------------------------------------------------------------------------
+# Same mechanism as the Frame (SM8650) image's gamescope-session: mangoapp is
+# GL via zink, and zink must run on the Turnip it was built against. The
+# Adreno 830 driver installed above swaps libvulkan_freedreno.so system-wide,
+# so a plain mangoapp would crash against the mismatched Turnip -- and
+# steamos-overlay/usr/lib/steamos/gamescope-session already knows this and
+# disables the overlay entirely (STEAM_USE_MANGOAPP=0) whenever this wrapper
+# is missing. Previously nothing installed it for sm8750, so the Performance
+# Overlay silently did nothing on every Odin 3 build.
+# Pin mangoapp's zink to a private copy of the Turnip it actually matches;
+# games keep using the system-wide one. When a custom matched Mesa stack
+# (MESA_STACK, below) replaces zink+Turnip together, no pin is needed -- that
+# block removes frame-turnip/the ICD again and the wrapper just runs mangoapp
+# unpinned.
+log "== pin Turnip for the Performance Overlay"
+TURNIP_FOR_MANGOAPP="$R/usr/lib/libvulkan_freedreno.so"
+[[ -f "$STOCK/usr/lib/libvulkan_freedreno.so" ]] && TURNIP_FOR_MANGOAPP="$STOCK/usr/lib/libvulkan_freedreno.so"
+mkdir -p "$R/usr/lib/steamos-sm8650/frame-turnip" "$R/usr/share/steamos-sm8650"
+install_file "$TURNIP_FOR_MANGOAPP" \
+  "$R/usr/lib/steamos-sm8650/frame-turnip/libvulkan_freedreno.so" 0755
+cat >"$R/usr/share/steamos-sm8650/frame-turnip_icd.aarch64.json" <<'JSON'
+{
+    "ICD": {
+        "api_version": "1.4.362",
+        "library_arch": "64",
+        "library_path": "/usr/lib/steamos-sm8650/frame-turnip/libvulkan_freedreno.so"
+    },
+    "file_format_version": "1.0.1"
+}
+JSON
+install_file "${ROOT}/sm8650-overlay/usr/lib/steamos-sm8650/bin/mangoapp" \
+  "$R/usr/lib/steamos-sm8650/bin/mangoapp" 0755
+
+# ---------------------------------------------------------------------------
 # 5. Odin 3 Overlay (InputPlumber, Display, Audio, Device Manager)
 # ---------------------------------------------------------------------------
 log "== SM8750 Odin 3 overlay"
