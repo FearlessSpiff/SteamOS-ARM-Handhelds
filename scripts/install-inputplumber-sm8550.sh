@@ -96,6 +96,14 @@ install_libiio() {
   fi
   command -v cmake >/dev/null || die "cmake required to build libiio"
   local bld="${CACHE}/libiio-src/build-steamos"
+  # Always start this configure clean. A stale cache from a prior run with a
+  # different CMAKE_C_COMPILER (e.g. host gcc, before cross-compiling was
+  # added below) doesn't just swap the compiler on reconfigure: CMake's
+  # "You have changed variables that require your cache to be deleted"
+  # recompute silently dropped our other -D...=OFF backend flags too here,
+  # re-enabling USB/network/iiod and failing on an unrelated missing libaio.
+  # The configure itself is a few seconds; not worth the staleness risk.
+  rm -rf "$bld"
   # Cross-compile when the build host isn't aarch64 itself (e.g. building
   # this image on an x86_64 machine instead of the arm64 VM this repo is
   # normally built in): a plain native cmake build here silently links a
