@@ -10,8 +10,14 @@ R="${STEAMOS_ROOTFS:-${WORKDIR}/rootfs}"
 MOD="${ROOT}/external-and-mods"
 OVL="${ROOT}/steamos-overlay"
 SM8750_OVL="${ROOT}/sm8750-overlay"
+# KREL comes from KOUT's own directory name (same convention as the common
+# apply-overlays.sh: "$(basename "$KOUT")"), not a hardcoded "7.2.0" -- that
+# only matched extract-rocknix.sh's prebuilt kernel. kernel-sm8750/build.sh's
+# from-source kernel self-reports "7.2.0-sm8750-steamos" (LOCALVERSION) and
+# needs its modules installed under that exact name, since that's what the
+# booted kernel's `uname -r` (and so /usr/lib/modules/<uname -r>/) will be.
 KOUT="$(readlink -f "${KERNEL_OUT:-${WORKDIR}/kernel-sm8750-release/7.2.0}")"
-KREL="7.2.0"
+KREL="$(basename "$KOUT")"
 STOCK="${R}/opt/stock-steamos"
 MESA_SO="${SM8750_MESA_SO:-${SM8750_OVL}/usr/lib/libvulkan_freedreno.so}"
 LOG="${WORKDIR}/odin3-apply.log"

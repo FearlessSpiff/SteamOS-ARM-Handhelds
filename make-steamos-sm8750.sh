@@ -58,6 +58,8 @@ Usage: $0 [options]
   --img PATH        Output image (default: ${IMG})
 
 Env: BOOT_MIB ROOT_MIB HOME_MIB STEAMOS_SM8750_IMG STEAMOS_ROOTFS KERNEL_OUT
+     SM8750_KERNEL=prebuilt|source (default prebuilt; source needs a native
+     aarch64 host and enables tracefs -- see ensure_kernel() in this script)
 EOF
 }
 
@@ -77,7 +79,30 @@ STEAMOS_BUILD="${STEAMOS_BUILD:-20260925.6175226}"
 STEAMOS_BUNDLE="deckard-${STEAMOS_BUILD}-0.5.0"
 STEAMOS_URL="https://steamdeck-images.steamos.cloud/vr/${STEAMOS_BUILD}"
 
+# SM8750_KERNEL=prebuilt (default): ROCKNIX's released binary kernel
+#   (extract-rocknix.sh). No tracefs -- steamos-manager and the Performance
+#   Overlay stay masked/off (see apply-overlays-sm8750.sh).
+# SM8750_KERNEL=source: build from ROCKNIX's own patch stack + kernel.org
+#   source (kernel-sm8750/build.sh -> kernel-common/build.sh). Has tracefs
+#   (kernel-common/steamos.config), confirmed booting and running
+#   steamos-manager / the Performance Overlay on a real Odin 3. Needs a
+#   native aarch64 build host (build on the Odin 3 itself, or see
+#   kernel-common/build.sh's own cross-compile notes) and a sparse clone of
+#   ROCKNIX/distribution at kernel-sm8750/soc.env's ROCKNIX_REF next to this
+#   repo (see kernel-sm8750/soc.env for the default path).
 ensure_kernel() {
+  if [[ "${SM8750_KERNEL:-prebuilt}" == source ]]; then
+    local kwork="${SM8750_KERNEL_WORK:-${WORKDIR}/kernel-sm8750-src}"
+    local kcur="${kwork}/output/current"
+    if [[ -L "$kcur" && -f "$(readlink -f "$kcur")/boot/KERNEL" ]]; then
+      log "SM8750 from-source kernel already built in ${kwork}"
+    else
+      log "Building SM8750 kernel from source (kernel-sm8750/build.sh)"
+      WORK="$kwork" bash "${MOD}/kernel-sm8750/build.sh"
+    fi
+    KOUT="$(readlink -f "$kcur")"
+    return 0
+  fi
   if [[ -f "${KOUT}/boot/KERNEL" && -d "${KOUT}/modules/7.2.0" ]]; then
     log "SM8750 kernel already staged in ${KOUT}"
     return 0
