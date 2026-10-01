@@ -213,7 +213,11 @@ KERNEL_HAS_TRACEFS=0
 KCFG="$(ls "$KOUT"/config-* 2>/dev/null | head -1)"
 [[ -n "$KCFG" ]] && grep -q '^CONFIG_FTRACE=y' "$KCFG" && KERNEL_HAS_TRACEFS=1
 if [[ "$KERNEL_HAS_TRACEFS" == 1 ]]; then
-  log "== steamos-manager: left enabled (kernel has CONFIG_FTRACE=y)"
+  log "== steamos-manager: enabled (kernel has CONFIG_FTRACE=y)"
+  # Actively unmask, not just "don't mask": $R can be a rootfs reused from an
+  # earlier build (e.g. a prior prebuilt-kernel run) that already masked it.
+  rm -f "$R/etc/systemd/user/steamos-manager.service" \
+    "$R/etc/systemd/user/steamos-manager-session-cleanup.service"
 else
   log "== steamos-manager: masked (no tracefs in this kernel)"
   for usvc in steamos-manager.service steamos-manager-session-cleanup.service; do
