@@ -304,6 +304,9 @@ install_output() {
   cp -a "${EXTRA_FW_SRC}/${ROCKNIX_DEVICE}/." "$o/firmware/"
   # Built-in copies are enough for the GPU; keep rootfs copies too for tooling.
   cp -a "${SRC}/external-firmware/." "$o/firmware/"
+  # Our own firmware (kernel-<soc>/firmware) over ROCKNIX's, e.g. an audio
+  # topology that goes with a DTS append.
+  [[ -d "${SOC_DIR}/firmware" ]] && cp -a "${SOC_DIR}/firmware/." "$o/firmware/"
 
   local dtb
   for dtb in $DTBS; do cp "${SRC}/arch/arm64/boot/dts/qcom/${dtb}.dtb" "$o/dtbs/"; done
