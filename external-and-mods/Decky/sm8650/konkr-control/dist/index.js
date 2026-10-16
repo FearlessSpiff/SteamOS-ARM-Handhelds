@@ -18,7 +18,7 @@ const definePlugin = (fn) => (...args) => fn(...args);
 const DFL = window.DFL;
 const SP_REACT = window.SP_REACT;
 const SP_JSX = window.SP_JSX;
-const { useEffect, useState, useCallback } = SP_REACT;
+const { useEffect, useState, useCallback, useRef } = SP_REACT;
 const jsx = SP_JSX.jsx;
 const jsxs = SP_JSX.jsxs;
 
@@ -35,15 +35,30 @@ const setMenuClicks = callable("set_menu_clicks");
 const setBypass = callable("set_bypass");
 const setButton = callable("set_button");
 const setGameFan = callable("set_game_fan");
-const GAME_FAN_OPTIONS = [
+const setFanTuning = callable("set_fan_tuning");
+const setChargeLimit = callable("set_charge_limit");
+const setSsh = callable("set_ssh");
+const getGames = callable("get_games");
+const setGamePerf = callable("set_game_perf");
+const setChargingFan = callable("set_charging_fan");
+const saveFanCurve = callable("save_fan_curve");
+const renameFanCurve = callable("rename_fan_curve");
+const deleteFanCurve = callable("delete_fan_curve");
+const BUILTIN_NAMES = { silent: "Quiet", balanced: "Balanced", turbo: "Cool" };
+const gameFanOptions = (mine) => [
     { data: "global", label: "Same as above" },
-    { data: "silent", label: "Quiet curve" },
-    { data: "balanced", label: "Balanced curve" },
-    { data: "turbo", label: "Cool curve" },
+    ...Object.entries(BUILTIN_NAMES).map(([k, v]) => ({ data: k, label: `${v} curve` })),
+    ...Object.keys(mine).map((k) => ({ data: k, label: k })),
     { data: "fixed-40", label: "Fixed 40%" },
     { data: "fixed-60", label: "Fixed 60%" },
     { data: "fixed-80", label: "Fixed 80%" },
     { data: "fixed-100", label: "Fixed 100%" },
+];
+const REACTIONS = [
+    { data: "gentle", label: "Gentle", desc: "Barely audible changes, slow to cool down" },
+    { data: "calm", label: "Calm", desc: "Smooth, the default" },
+    { data: "quick", label: "Quick", desc: "Follows load changes within seconds" },
+    { data: "instant", label: "Instant", desc: "Jumps straight to the curve" },
 ];
 function gameName(appid) {
     try {
@@ -76,6 +91,46 @@ const RGB_PRESETS = [
 ];
 
 
+// Custom stick colour: a hue at full saturation, as rrggbb.
+function hueHex(h) {
+    const f = (n) => { const k = (n + h / 60) % 6; return Math.round(255 * (1 - Math.max(0, Math.min(k, 4 - k, 1)))); };
+    return [f(5), f(3), f(1)].map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+function hexHue(hex) {
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+    const mx = Math.max(r, g, b), d = mx - Math.min(r, g, b);
+    if (!d) return 0;
+    const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return Math.round((h * 60 + 360) % 360);
+}
+
+// A slider that moves as fast as the finger: it keeps its own value while
+// in use and sends only the latest one, at most every `every` ms, so the
+// backend never holds it back. The stored value takes over again once it
+// has been left alone for a moment.
+function LiveSlider({ value, onChange, every = 120, ...props }) {
+    const [v, setV] = useState(value);
+    const touched = useRef(0), pending = useRef(null), timer = useRef(null);
+    useEffect(() => { if (Date.now() - touched.current > 1500) setV(value); }, [value]);
+    useEffect(() => () => clearTimeout(timer.current), []);
+    const change = (nv) => {
+        setV(nv);
+        touched.current = Date.now();
+        pending.current = nv;
+        if (!timer.current) {
+            timer.current = setTimeout(function send() {
+                const out = pending.current;
+                pending.current = null;
+                if (out === null) { timer.current = null; return; }
+                onChange(out);
+                timer.current = setTimeout(send, every);
+            }, 0);
+        }
+    };
+    return jsx(DFL.SliderField, { ...props, value: v, onChange: change });
+}
+
+const section = (title, kids) => jsx(DFL.PanelSection, { title, children: kids.filter(Boolean) });
 const row = (child) => jsx(DFL.PanelSectionRow, { children: child });
 const note = (text) => row(jsx("div", { style: { fontSize: "12px", opacity: 0.75 }, children: text }));
 
@@ -137,9 +192,403 @@ function applyShortFps(on) {
     apply();
     return true;
 }
+// Fan curve graph: the curve, its points (the selected one ringed) and where
+// the fan is right now (filled dot) and heading (open ring).
+const G = { w: 268, h: 128, l: 26, r: 8, t: 8, b: 18, t0: 30, t1: 105 };
+const gx = (t) => G.l + (Math.max(G.t0, Math.min(G.t1, t)) - G.t0) / (G.t1 - G.t0) * (G.w - G.l - G.r);
+const gy = (p) => G.t + (1 - Math.max(0, Math.min(100, p)) / 100) * (G.h - G.t - G.b);
+function FanGraph({ points, sel, live }) {
+    const pts = points || [];
+    const line = pts.length ? [[G.t0, pts[0][1]], ...pts, [G.t1, pts[pts.length - 1][1]]] : [];
+    const path = line.map(([t, p], i) => `${i ? "L" : "M"}${gx(t).toFixed(1)},${gy(p).toFixed(1)}`).join("");
+    const area = path ? `${path}L${gx(G.t1)},${gy(0)}L${gx(G.t0)},${gy(0)}Z` : "";
+    const grid = [];
+    for (let t = 40; t <= 100; t += 20) {
+        grid.push(jsx("line", { x1: gx(t), x2: gx(t), y1: G.t, y2: gy(0), stroke: "#ffffff14" }, `x${t}`));
+        grid.push(jsx("text", { x: gx(t), y: G.h - 4, fill: "#ffffff70", fontSize: 9, textAnchor: "middle", children: `${t}°` }, `xt${t}`));
+    }
+    for (let p = 0; p <= 100; p += 50) {
+        grid.push(jsx("line", { x1: G.l, x2: G.w - G.r, y1: gy(p), y2: gy(p), stroke: "#ffffff14" }, `y${p}`));
+        grid.push(jsx("text", { x: G.l - 4, y: gy(p) + 3, fill: "#ffffff70", fontSize: 9, textAnchor: "end", children: `${p}%` }, `yt${p}`));
+    }
+    const kids = [
+        jsxs("defs", { children: [
+            jsxs("linearGradient", { id: "hc-heat", x1: 0, x2: 1, y1: 0, y2: 0, children: [
+                jsx("stop", { offset: "0%", stopColor: "#4cc2ff" }),
+                jsx("stop", { offset: "60%", stopColor: "#ffb547" }),
+                jsx("stop", { offset: "100%", stopColor: "#ff5a3c" }),
+            ] }),
+        ] }),
+        ...grid,
+        area ? jsx("path", { d: area, fill: "url(#hc-heat)", opacity: 0.16 }) : null,
+        path ? jsx("path", { d: path, fill: "none", stroke: "url(#hc-heat)", strokeWidth: 2.5, strokeLinejoin: "round" }) : null,
+        ...pts.map(([t, p], i) => jsx("circle", {
+            cx: gx(t), cy: gy(p), r: i === sel ? 5 : 3,
+            fill: i === sel ? "#ffffff" : "#ffffffb0", stroke: i === sel ? "#4cc2ff" : "none", strokeWidth: 2,
+        }, `p${i}`)),
+    ];
+    if (live && live.temp != null) {
+        const now = Math.round((live.pwm || 0) / 2.55), aim = Math.round((live.target || 0) / 2.55);
+        if (aim !== now) kids.push(jsx("circle", { cx: gx(live.temp), cy: gy(aim), r: 4, fill: "none", stroke: "#ffffffa0", strokeDasharray: "2 2" }));
+        kids.push(jsx("line", { x1: gx(live.temp), x2: gx(live.temp), y1: gy(now), y2: gy(0), stroke: "#ffffff40", strokeDasharray: "3 3" }));
+        kids.push(jsx("circle", { cx: gx(live.temp), cy: gy(now), r: 4.5, fill: "#7dff9a", stroke: "#0b1a10", strokeWidth: 1.5 }));
+    }
+    return jsx("svg", { viewBox: `0 0 ${G.w} ${G.h}`, style: { width: "100%", display: "block" }, children: kids });
+}
+const liveText = (live) => live && live.temp != null
+    ? `Now ${live.temp} °C · fan ${Math.round((live.pwm || 0) / 2.55)}%` + (live.target !== live.pwm ? ` → ${Math.round((live.target || 0) / 2.55)}%` : "")
+    : "";
+
+// Rename prompt (Steam's keyboard comes up for the text field).
+function RenameModal({ name, onDone, closeModal }) {
+    const [value, setValue] = useState(name);
+    return jsx(DFL.ConfirmModal, {
+        strTitle: "Rename curve",
+        strOKButtonText: "Rename",
+        onOK: () => { onDone(value); closeModal && closeModal(); },
+        onCancel: () => closeModal && closeModal(),
+        closeModal,
+        children: jsx(DFL.TextField, { value, onChange: (e) => setValue(e.target.value) }),
+    });
+}
+
+// Edits one of the user's curves in place. Every change is saved within a
+// moment and konkrd follows it, so the fan can be heard changing.
+function CurveEditor({ name, points, live, onChanged, onClose }) {
+    const [pts, setPts] = useState(points);
+    const [sel, setSel] = useState(Math.min(1, points.length - 1));
+    const [armDelete, setArmDelete] = useState(false);
+    const original = useRef(points);
+    const timer = useRef(null);
+    const commit = (next) => {
+        setPts(next);
+        clearTimeout(timer.current);
+        timer.current = setTimeout(() => saveFanCurve(name, next).then(onChanged), 350);
+    };
+    useEffect(() => () => clearTimeout(timer.current), []);
+    const cur = pts[sel];
+    // A point stays between its neighbours, and its speed between theirs.
+    const tLo = sel > 0 ? pts[sel - 1][0] + 1 : 20, tHi = sel < pts.length - 1 ? pts[sel + 1][0] - 1 : 105;
+    const pLo = sel > 0 ? pts[sel - 1][1] : 0, pHi = sel < pts.length - 1 ? pts[sel + 1][1] : 100;
+    const setPoint = (t, p) => commit(pts.map((q, i) => (i === sel ? [t, p] : q)));
+    const add = () => {
+        if (pts.length >= 8) return;
+        const a = pts[sel], b = pts[sel + 1];
+        const np = b ? [Math.round((a[0] + b[0]) / 2), Math.round((a[1] + b[1]) / 2)] : [Math.min(105, a[0] + 4), a[1]];
+        if (b && np[0] <= a[0]) return;
+        commit([...pts.slice(0, sel + 1), np, ...pts.slice(sel + 1)]);
+        setSel(sel + 1);
+    };
+    const remove = () => {
+        if (pts.length <= 2) return;
+        commit(pts.filter((_, i) => i !== sel));
+        setSel(Math.max(0, sel - 1));
+    };
+    return jsxs(SP_JSX.Fragment, { children: [
+        row(jsx(FanGraph, { points: pts, sel, live })),
+        note(`Editing ${name} · ${pts.length} points · changes apply as you make them`),
+        row(jsx(DFL.SliderField, {
+            label: "Point", value: sel + 1, min: 1, max: pts.length, step: 1, showValue: true,
+            onChange: (v) => setSel(v - 1),
+        })),
+        row(jsx(DFL.SliderField, {
+            label: "Temperature", value: cur[0], min: tLo, max: Math.max(tLo, tHi), step: 1,
+            showValue: true, valueSuffix: " °C", disabled: tLo >= tHi,
+            onChange: (v) => setPoint(v, cur[1]),
+        })),
+        row(jsx(DFL.SliderField, {
+            label: "Fan speed", value: cur[1], min: pLo, max: Math.max(pLo, pHi), step: 1,
+            showValue: true, valueSuffix: "%", disabled: pLo >= pHi,
+            onChange: (v) => setPoint(cur[0], v),
+        })),
+        row(jsxs(DFL.Focusable, { style: { display: "flex", gap: "8px" }, "flow-children": "horizontal", children: [
+            jsx(DFL.DialogButton, { style: { flex: 1, minWidth: 0 }, disabled: pts.length >= 8, onClick: add, children: "Add point" }),
+            jsx(DFL.DialogButton, { style: { flex: 1, minWidth: 0 }, disabled: pts.length <= 2, onClick: remove, children: "Remove" }),
+        ] })),
+        row(jsxs(DFL.Focusable, { style: { display: "flex", gap: "8px" }, "flow-children": "horizontal", children: [
+            jsx(DFL.DialogButton, { style: { flex: 1, minWidth: 0 }, onClick: () => commit(original.current), children: "Undo changes" }),
+            jsx(DFL.DialogButton, {
+                style: { flex: 1, minWidth: 0 },
+                onClick: () => DFL.showModal(jsx(RenameModal, { name, onDone: (v) => renameFanCurve(name, v).then(() => { onChanged(); onClose(); }) })),
+                children: "Rename",
+            }),
+        ] })),
+        row(jsxs(DFL.Focusable, { style: { display: "flex", gap: "8px" }, "flow-children": "horizontal", children: [
+            jsx(DFL.DialogButton, {
+                style: { flex: 1, minWidth: 0, color: armDelete ? "#ff6b5a" : undefined },
+                onClick: () => armDelete ? deleteFanCurve(name).then(() => { onChanged(); onClose(); }) : setArmDelete(true),
+                children: armDelete ? "Press again" : "Delete",
+            }),
+            jsx(DFL.DialogButton, { style: { flex: 1, minWidth: 0 }, onClick: onClose, children: "Done" }),
+        ] })),
+    ] });
+}
+
+function fanSection(st, fan, refresh, editing, setEditing) {
+    const mine = st.fan_curves || {};
+    const all = { ...st.builtin_curves, ...mine };
+    const following = fan.boost ? "turbo" : (fan.curve || st.profile);
+    const pts = all[following] || all.balanced;
+    if (editing && mine[editing]) {
+        return [jsx(CurveEditor, {
+            key: editing, name: editing, points: mine[editing], live: st.fan_live,
+            onChanged: refresh, onClose: () => setEditing(null),
+        })];
+    }
+    const modeRow = row(jsx(DFL.DropdownItem, {
+        label: "Mode",
+        description: fan.mode === "fixed"
+            ? "Fixed speed (switches back to automatic above 90 °C)"
+            : "Automatic, follows a temperature curve",
+        rgOptions: [{ data: "auto", label: "Automatic" }, { data: "fixed", label: "Fixed speed" }],
+        selectedOption: fan.mode,
+        onChange: (o) => setFan(o.data, fan.fixed, fan.boost).then(refresh),
+    }));
+    if (fan.mode === "fixed" || !st.fan_editor) {
+        return [modeRow, fan.mode === "fixed" ? row(jsx(LiveSlider, {
+            label: "Speed",
+            value: fan.fixed, min: 0, max: 100, step: 5, showValue: true, valueSuffix: "%",
+            onChange: (v) => setFan("fixed", v, fan.boost),
+        })) : null];
+    }
+    const tune = (patch) => setFanTuning(
+        "curve" in patch ? patch.curve : (fan.curve || ""),
+        patch.reaction || fan.reaction || "calm",
+        "stop_below" in patch ? patch.stop_below : (fan.stop_below || 0),
+    ).then(refresh);
+    const profileName = BUILTIN_NAMES[st.profile] || st.profile;
+    const curveOptions = [
+        { data: "", label: `Profile (${profileName})` },
+        ...Object.entries(BUILTIN_NAMES).map(([k, v]) => ({ data: k, label: v })),
+        ...Object.keys(mine).map((k) => ({ data: k, label: k })),
+        ...(Object.keys(mine).length < 8 ? [{ data: "+new", label: "New curve…" }] : []),
+    ];
+    const reaction = REACTIONS.find((r) => r.data === (fan.reaction || "calm")) || REACTIONS[1];
+    return [
+        row(jsx(FanGraph, { points: pts, sel: -1, live: st.fan_live })),
+        note(liveText(st.fan_live) || "Waiting for the fan…"),
+        modeRow,
+        row(jsx(DFL.DropdownItem, {
+            label: "Curve",
+            description: fan.boost ? "Boost is on: the Cool curve wins until you turn it off" : "",
+            rgOptions: curveOptions,
+            selectedOption: fan.curve || "",
+            onChange: (o) => {
+                if (o.data !== "+new") return tune({ curve: o.data });
+                const name = nextCurveName(mine);
+                saveFanCurve(name, pts).then(() => tune({ curve: name })).then(() => setEditing(name));
+            },
+        })),
+        mine[fan.curve] ? row(jsx(DFL.ButtonItem, {
+            layout: "below", onClick: () => setEditing(fan.curve), children: `Edit ${fan.curve}`,
+        })) : null,
+        row(jsx(DFL.DropdownItem, {
+            label: "Reaction",
+            description: reaction.desc,
+            rgOptions: REACTIONS.map((r) => ({ data: r.data, label: r.label })),
+            selectedOption: reaction.data,
+            onChange: (o) => tune({ reaction: o.data }),
+        })),
+        row(jsx(DFL.ToggleField, {
+            label: "Silent when cool",
+            description: fan.stop_below ? `The fan stops below ${fan.stop_below} °C and starts again ${fan.stop_below + 3} °C` : "Let the fan stop when the chip is cool",
+            checked: !!fan.stop_below,
+            onChange: (v) => tune({ stop_below: v ? 50 : 0 }),
+        })),
+        fan.stop_below ? row(jsx(LiveSlider, {
+            label: "Stop below", value: fan.stop_below, min: 35, max: 70, step: 1,
+            showValue: true, valueSuffix: " °C",
+            onChange: (v) => tune({ stop_below: v }),
+        })) : null,
+        row(jsx(LiveSlider, {
+            label: "While charging, at least",
+            value: fan.charging_min || 0, min: 0, max: 60, step: 5,
+            showValue: true, valueSuffix: "%", every: 300,
+            onChange: (v) => setChargingFan(v).then(refresh),
+        })),
+        row(jsx(DFL.ToggleField, {
+            label: "Boost",
+            description: "Use the Cool curve with any profile",
+            checked: !!fan.boost,
+            onChange: (v) => setFan(fan.mode, fan.fixed, v).then(refresh),
+        })),
+    ];
+}
+
+// konkrd's GPU range per profile, as % (floor, ceiling): what a game's own
+// range starts from.
+const GPU_RANGE = { silent: [0, 75], balanced: [0, 100], turbo: [35, 100] };
+const CORE_OPTIONS = [
+    { data: "default", label: "Fast cores (default)" },
+    { data: "big", label: "Big cores only" },
+    { data: "all", label: "All cores" },
+    { data: "custom", label: "Custom…" },
+];
+const PRIORITIES = [
+    { data: "normal", label: "Normal" },
+    { data: "high", label: "High" },
+    { data: "highest", label: "Highest" },
+];
+
+// One game's own performance settings. The running game is picked by
+// default; any installed game can be set up before it starts. Edits are
+// saved within a moment and konkrd applies them to a running game at once.
+function GamePage({ st, refresh }) {
+    const running = st.game && st.game.appid ? st.game.appid : 0;
+    const [games, setGames] = useState([]);
+    const [appid, setAppid] = useState(running);
+    const [cfg, setCfg] = useState({});
+    const [cores, setCores] = useState("");
+    const timer = useRef(null);
+    useEffect(() => { getGames().then(setGames).catch(() => {}); }, []);
+    useEffect(() => { if (!appid && running) setAppid(running); }, [running]);
+    const target = appid || (games[0] && games[0].appid) || 0;
+    useEffect(() => {
+        const c = (st.perf_games || {})[String(target)] || {};
+        setCfg(c);
+        setCores(c.cores && !["all", "big"].includes(c.cores) ? c.cores : "");
+    }, [target]);
+    useEffect(() => () => clearTimeout(timer.current), []);
+    const change = (patch) => {
+        const next = { ...cfg, ...patch };
+        Object.keys(next).forEach((k) => next[k] === undefined && delete next[k]);
+        setCfg(next);
+        clearTimeout(timer.current);
+        timer.current = setTimeout(() => setGamePerf(target, next).then(refresh), 300);
+    };
+    if (!target) return section("Game", [note("No games installed yet")]);
+    const names = new Map(games.map((g) => [g.appid, g.name]));
+    if (running && !names.has(running)) names.set(running, gameName(running));
+    const options = [...names.entries()].map(([id, name]) => ({ data: id, label: id === running ? `▶ ${name}` : name }));
+    const profile = cfg.profile || st.profile;
+    const [gLo, gHi] = GPU_RANGE[profile] || [0, 100];
+    const customGpu = "gpu_min" in cfg || "gpu_max" in cfg;
+    const coreChoice = !cfg.cores ? "default" : ["all", "big"].includes(cfg.cores) ? cfg.cores : "custom";
+    const isRunning = target === running;
+    const pickCores = (choice) => {
+        if (choice !== "custom") return change({ cores: choice === "default" ? undefined : choice });
+        const list = cores || `2-${st.cpus - 1}`;
+        setCores(list);
+        change({ cores: list });
+    };
+    return jsxs(SP_JSX.Fragment, { children: [
+        section("Game", [
+            row(jsx(DFL.DropdownItem, {
+                label: "Settings for",
+                rgOptions: options,
+                selectedOption: target,
+                onChange: (o) => setAppid(o.data),
+            })),
+            note(isRunning ? "Running now: changes apply right away" : "Applied whenever this game starts"),
+        ]),
+        section("Performance", [
+            row(jsx(DFL.DropdownItem, {
+                label: "Profile",
+                rgOptions: [{ data: "", label: `Follow global (${(PROFILES.find((p) => p.data === st.profile) || {}).label || st.profile})` },
+                    ...PROFILES.map((p) => ({ data: p.data, label: p.label }))],
+                selectedOption: cfg.profile || "",
+                onChange: (o) => change({ profile: o.data || undefined }),
+            })),
+            row(jsx(LiveSlider, {
+                label: "CPU limit", value: cfg.cpu_max || 100, min: 30, max: 100, step: 5,
+                showValue: true, valueSuffix: "%", every: 300,
+                onChange: (v) => change({ cpu_max: v >= 100 ? undefined : v }),
+            })),
+            row(jsx(DFL.ToggleField, {
+                label: "Own GPU range",
+                description: customGpu ? "" : `Profile range ${gLo}–${gHi} % of the GPU clock`,
+                checked: customGpu,
+                onChange: (v) => change(v ? { gpu_min: gLo, gpu_max: gHi } : { gpu_min: undefined, gpu_max: undefined }),
+            })),
+            customGpu ? row(jsx(LiveSlider, {
+                label: "GPU floor", value: cfg.gpu_min ?? gLo, min: 0, max: 100, step: 5,
+                showValue: true, valueSuffix: "%", every: 300,
+                onChange: (v) => change({ gpu_min: v, gpu_max: Math.max(v, cfg.gpu_max ?? gHi) }),
+            })) : null,
+            customGpu ? row(jsx(LiveSlider, {
+                label: "GPU ceiling", value: cfg.gpu_max ?? gHi, min: 0, max: 100, step: 5,
+                showValue: true, valueSuffix: "%", every: 300,
+                onChange: (v) => change({ gpu_max: v, gpu_min: Math.min(v, cfg.gpu_min ?? gLo) }),
+            })) : null,
+        ]),
+        section("Threads", [
+            row(jsx(DFL.DropdownItem, {
+                label: "Cores",
+                description: coreChoice === "default" ? "Keeps the game off the slow little cores" : "",
+                rgOptions: CORE_OPTIONS,
+                selectedOption: coreChoice,
+                onChange: (o) => pickCores(o.data),
+            })),
+            coreChoice === "custom" ? row(jsx(DFL.TextField, {
+                label: `Core list (0–${st.cpus - 1}, e.g. 2-4,7)`,
+                value: cores,
+                onChange: (e) => {
+                    const v = e.target.value.replace(/[^0-9,-]/g, "");
+                    setCores(v);
+                    if (/^\d+(-\d+)?(,\d+(-\d+)?)*$/.test(v)) change({ cores: v });
+                },
+            })) : null,
+            row(jsx(DFL.DropdownItem, {
+                label: "Priority",
+                description: cfg.priority ? "The game's threads get the CPU before background work" : "",
+                rgOptions: PRIORITIES,
+                selectedOption: cfg.priority || "normal",
+                onChange: (o) => change({ priority: o.data === "normal" ? undefined : o.data }),
+            })),
+        ]),
+        section("Fan", [
+            row(jsx(DFL.DropdownItem, {
+                label: "Fan for this game",
+                rgOptions: gameFanOptions(st.fan_curves || {}),
+                selectedOption: isRunning ? st.game.fan : gameFanChoice(st, target),
+                onChange: (o) => setGameFan(target, o.data).then(refresh),
+            })),
+        ]),
+        Object.keys(cfg).length ? section("", [row(jsx(DFL.ButtonItem, {
+            layout: "below",
+            onClick: () => { setCfg({}); setCores(""); setGamePerf(target, {}).then(() => setGameFan(target, "global")).then(refresh); },
+            children: "Reset this game",
+        }))]) : null,
+    ].filter(Boolean) });
+}
+function gameFanChoice(st, appid) {
+    const e = (st.fan_games || {})[String(appid)];
+    if (!e) return "global";
+    return e.mode === "fixed" ? `fixed-${e.fixed}` : e.curve || "global";
+}
+
+function nextCurveName(mine) {
+    for (let i = 1; ; i++) if (!mine[`My curve ${i}`]) return `My curve ${i}`;
+}
+
+// One page at a time, picked in a bar of tabs; the last one is remembered.
+const TAB_KEY = "handheld-control:tab";
+function savedTab() {
+    try { return ["power", "fan", "game", "lights", "more"].includes(localStorage.getItem(TAB_KEY)) ? localStorage.getItem(TAB_KEY) : "power"; } catch (e) { return "power"; }
+}
+function TabBar({ tabs, tab, onTab }) {
+    return jsx(DFL.Focusable, {
+        "flow-children": "horizontal",
+        style: { display: "flex", gap: "4px", padding: "3px", borderRadius: "8px", background: "#ffffff0d" },
+        children: tabs.map((t) => jsx(DFL.DialogButton, {
+            onClick: () => onTab(t.id),
+            style: {
+                flex: 1, minWidth: 0, padding: "6px 0", fontSize: "13px", borderRadius: "6px",
+                background: t.id === tab ? "#4cc2ff" : "transparent",
+                color: t.id === tab ? "#0b1622" : "#ffffffc0",
+                fontWeight: t.id === tab ? 700 : 500,
+            },
+            children: t.label,
+        }, t.id)),
+    });
+}
+
 function Content() {
     const [st, setSt] = useState(null);
     const [shortFps, setShortFps] = useState(shortFpsWanted());
+    const [editing, setEditing] = useState(null);
+    const [tab, setTab] = useState(savedTab());
+    const pickTab = (id) => { setTab(id); setEditing(null); try { localStorage.setItem(TAB_KEY, id); } catch (e) {} };
     const refresh = useCallback(() => {
         getState().then(setSt).catch(() => {});
     }, []);
@@ -153,6 +602,8 @@ function Content() {
         return jsx(DFL.PanelSection, { children: row("Loading…") });
     }
     const prof = PROFILES.find((p) => p.data === st.profile) || PROFILES[1];
+    const ownProfile = st.game && st.game.appid && ((st.perf_games || {})[String(st.game.appid)] || {}).profile;
+    const gameProf = ownProfile && ownProfile !== st.profile ? PROFILES.find((p) => p.data === ownProfile) : null;
     const fan = st.fan || { mode: "auto", fixed: 50, boost: false };
     const status = [
         st.temp_c != null ? `${st.temp_c} °C` : null,
@@ -160,132 +611,148 @@ function Content() {
         st.gpu_mhz != null ? `GPU ${st.gpu_mhz} MHz` : null,
     ].filter(Boolean).join(" · ");
 
+    const tabs = [
+        { id: "power", label: "Power" },
+        { id: "fan", label: "Fan" },
+        { id: "game", label: "Game" },
+        { id: "lights", label: "Lights" },
+        { id: "more", label: "More" },
+    ];
+    const pages = {
+        power: () => [
+            section("Profile", [
+                row(jsx(DFL.DropdownItem, {
+                    label: "Profile",
+                    description: prof.desc,
+                    rgOptions: PROFILES.map((p) => ({ data: p.data, label: p.label })),
+                    selectedOption: st.profile,
+                    onChange: (o) => setProfile(o.data).then(refresh),
+                })),
+            ]),
+            st.charge_limit != null || (st.bypass && st.bypass.supported) ? section("Battery", [
+                st.charge_limit != null ? row(jsx(LiveSlider, { every: 600,
+                    label: "Charge limit",
+                    value: st.charge_limit, min: 55, max: 100, step: 5, showValue: true, valueSuffix: " %",
+                    onChange: (v) => setChargeLimit(v).then(refresh),
+                })) : null,
+                st.bypass && st.bypass.supported ? row(jsx(DFL.ToggleField, {
+                    label: "Bypass charging",
+                    description: st.bypass.on
+                        ? `Plugged in, the battery stays at ${st.bypass.level} % and the device runs from the charger`
+                        : "Run from the charger and leave the battery alone, for long sessions plugged in (holds at 55 % or more)",
+                    checked: !!st.bypass.on,
+                    onChange: (v) => setBypass(v).then(refresh),
+                })) : null,
+            ]) : null,
+            section("Frame limit", [
+                row(jsx(DFL.ToggleField, {
+                    label: "Short frame limit list",
+                    description: shortFpsSteps(),
+                    checked: shortFps,
+                    onChange: (v) => { try { localStorage.setItem(SHORT_FPS_KEY, v ? "1" : "0"); } catch (e) {} setShortFps(v); applyShortFps(v); },
+                })),
+            ]),
+            st.has_dualboot ? section("Restart", [
+                st.has_dualboot ? row(jsx(DFL.ButtonItem, {
+                    layout: "below",
+                    description: st.dualboot_text,
+                    onClick: () => bootAndroid(),
+                    children: st.dualboot_label || "Restart into Android",
+                })) : null,
+            ]) : null,
+        ],
+        fan: () => [section("Fan", fanSection(st, fan, refresh, editing, setEditing))],
+        game: () => [jsx(GamePage, { st, refresh }, "game")],
+        lights: () => [section("Lighting", [
+                row(jsx(DFL.DropdownItem, {
+                    label: "Stick lighting",
+                    disabled: !st.sticks_led,
+                    description: st.sticks_led ? "" : (st.has_mcu_link ? "Needs the controller MCU link (in More)" : "No stick lights found on this device"),
+                    rgOptions: [...RGB_PRESETS.map((p, i) => ({ data: i, label: p.label }))
+                        .filter((o) => st.has_breath || RGB_PRESETS[o.data].mode !== "breath"),
+                        { data: "custom", label: "Custom colour" }],
+                    selectedOption: (() => {
+                        const i = RGB_PRESETS.findIndex((p) => p.mode === st.rgb.mode && p.color === st.rgb.color);
+                        return i >= 0 ? i : st.rgb.mode === "static" ? "custom" : RGB_PRESETS.length - 1;
+                    })(),
+                    onChange: (o) => {
+                        const p = o.data === "custom" ? { mode: "static", color: hueHex(200) } : RGB_PRESETS[o.data];
+                        setRgb(p.mode, p.color, st.rgb.brightness || 160).then(refresh);
+                    },
+                })),
+                st.sticks_led && st.rgb.mode === "static" && !RGB_PRESETS.some((p) => p.color === st.rgb.color) ? row(jsx(LiveSlider, {
+                    label: "Colour",
+                    value: hexHue(st.rgb.color), min: 0, max: 359, step: 3,
+                    onChange: (v) => setRgb("static", hueHex(v), st.rgb.brightness || 160),
+                })) : null,
+                st.sticks_led && st.rgb.mode === "static" ? row(jsx(LiveSlider, {
+                    label: "Brightness",
+                    value: Math.round((st.rgb.brightness || 160) / 2.55), min: 5, max: 100, step: 5,
+                    showValue: true, valueSuffix: "%",
+                    onChange: (v) => setRgb(st.rgb.mode, st.rgb.color, Math.round(v * 2.55)),
+                })) : null,
+                st.has_power_led ? row(jsx(DFL.ToggleField, {
+                    label: "Power LED",
+                    description: "Charging / full / low-battery colours and profile flashes",
+                    checked: st.power_led !== false,
+                    onChange: (v) => setPowerLed(v).then(refresh),
+                })) : null,
+        ])],
+        more: () => [
+            st.fit_buttons ? section("Buttons", [
+                ...[["F13", "KONKR button"], ["F14", "Performance button"]].map(([key, label]) => row(jsx(DFL.DropdownItem, {
+                    label,
+                    description: (st.buttons || {})[key] === "game"
+                        ? "A controller button: bind it per game in Steam's controller settings (shows as a trackpad click)"
+                        : "",
+                    rgOptions: BUTTON_ACTIONS,
+                    selectedOption: (st.buttons || {})[key] || "none",
+                    onChange: (o) => setButton(key, o.data).then(refresh),
+                }))),
+                note("Home = Steam button · right front button = Quick Access · Power: tap to sleep, hold for the power menu"),
+            ]) : null,
+            st.system ? section("System", [
+                row(jsx(DFL.Field, { label: "Version", description: `${st.system.os} · build ${st.system.build}`, focusable: true })),
+                row(jsx(DFL.Field, { label: "Kernel", description: st.system.kernel, focusable: true })),
+                row(jsx(DFL.ToggleField, {
+                    label: "Remote access (SSH)",
+                    description: st.system.ssh ? `ssh steamos@${st.system.ip || "this device"}` : "Log in from a PC over the network",
+                    checked: !!st.system.ssh,
+                    onChange: (v) => setSsh(v).then(refresh),
+                })),
+            ]) : null,
+            section("Device", [
+                st.has_motors ? row(jsx(DFL.ToggleField, {
+                    label: "Menu clicks",
+                    description: "A light buzz when moving through Steam's menus",
+                    checked: st.menu_clicks !== false,
+                    onChange: (v) => setMenuClicks(v).then(refresh),
+                })) : null,
+                st.has_flip ? row(jsx(DFL.ToggleField, {
+                    label: "Flip screen",
+                    description: "Turn Game Mode the other way up, for controllers that plug into the short side. Applies the next time Game Mode starts (restart the tablet)",
+                    checked: !!st.flip,
+                    onChange: (v) => setFlip(v).then(refresh),
+                })) : null,
+                st.has_mcu_link ? row(jsx(DFL.ToggleField, {
+                    label: "Controller MCU link",
+                    description: "Needed for the KONKR, Performance and Quick Access buttons and stick lighting",
+                    checked: st.mcu_enabled,
+                    onChange: (v) => setMcu(v).then(() => {
+                        toaster.toast({ title: "Handheld Control", body: v ? "MCU link enabled" : "MCU link disabled" });
+                        refresh();
+                    }),
+                })) : null,
+            ]),
+        ],
+    };
     return jsxs(SP_JSX.Fragment, { children: [
-        jsxs(DFL.PanelSection, { title: "Performance", children: [
-            row(jsx(DFL.DropdownItem, {
-                label: "Profile",
-                description: prof.desc,
-                rgOptions: PROFILES.map((p) => ({ data: p.data, label: p.label })),
-                selectedOption: st.profile,
-                onChange: (o) => setProfile(o.data).then(refresh),
-            })),
-            note(st.daemon ? status : `${st.daemon_name || "konkrd"} is not running`),
+        jsxs(DFL.PanelSection, { children: [
+            row(jsx("div", { style: { fontSize: "12px", opacity: 0.8, textAlign: "center" },
+                children: st.daemon ? `${prof.label}${gameProf ? ` → ${gameProf.label} for this game` : ""} · ${status}` : `${st.daemon_name || "konkrd"} is not running` })),
+            row(jsx(TabBar, { tabs, tab, onTab: pickTab })),
         ] }),
-        jsxs(DFL.PanelSection, { title: "Fan", children: [
-            row(jsx(DFL.DropdownItem, {
-                label: "Mode",
-                description: fan.mode === "fixed"
-                    ? "Fixed speed (switches back to automatic above 90 °C)"
-                    : "Automatic, follows the profile's temperature curve",
-                rgOptions: [{ data: "auto", label: "Automatic" }, { data: "fixed", label: "Fixed speed" }],
-                selectedOption: fan.mode,
-                onChange: (o) => setFan(o.data, fan.fixed, fan.boost).then(refresh),
-            })),
-            fan.mode === "fixed" ? row(jsx(DFL.SliderField, {
-                label: "Speed",
-                value: fan.fixed, min: 0, max: 100, step: 5, showValue: true, valueSuffix: "%",
-                onChange: (v) => setFan("fixed", v, fan.boost),
-            })) : row(jsx(DFL.ToggleField, {
-                label: "Boost",
-                description: "Use the Turbo fan curve with any profile",
-                checked: !!fan.boost,
-                onChange: (v) => setFan(fan.mode, fan.fixed, v).then(refresh),
-            })),
-            st.game && st.game.appid ? row(jsx(DFL.DropdownItem, {
-                label: `For ${gameName(st.game.appid)}`,
-                description: st.game.fan === "global"
-                    ? "Uses the settings above. Pick a curve or speed to keep for this game"
-                    : "Used whenever this game runs (above 90 °C a fixed speed still gives way)",
-                rgOptions: GAME_FAN_OPTIONS,
-                selectedOption: st.game.fan,
-                onChange: (o) => setGameFan(st.game.appid, o.data).then(refresh),
-            })) : null,
-        ] }),
-        st.bypass && st.bypass.supported ? jsxs(DFL.PanelSection, { title: "Battery", children: [
-            row(jsx(DFL.ToggleField, {
-                label: "Bypass charging",
-                description: st.bypass.on
-                    ? `Plugged in, the battery stays at ${st.bypass.level} % and the device runs from the charger`
-                    : "Run from the charger and leave the battery alone, for long sessions plugged in (holds at 55 % or more)",
-                checked: !!st.bypass.on,
-                onChange: (v) => setBypass(v).then(refresh),
-            })),
-        ] }) : null,
-        jsxs(DFL.PanelSection, { title: "Lighting", children: [
-            row(jsx(DFL.DropdownItem, {
-                label: "Stick lighting",
-                disabled: !st.sticks_led,
-                description: st.sticks_led ? "" : (st.has_mcu_link ? "Needs the controller MCU link (below)" : "No stick lights found on this device"),
-                rgOptions: RGB_PRESETS.map((p, i) => ({ data: i, label: p.label }))
-                    .filter((o) => st.has_breath || RGB_PRESETS[o.data].mode !== "breath"),
-                selectedOption: Math.max(0, RGB_PRESETS.findIndex((p) => p.mode === st.rgb.mode && p.color === st.rgb.color)),
-                onChange: (o) => {
-                    const p = RGB_PRESETS[o.data];
-                    setRgb(p.mode, p.color, st.rgb.brightness || 160).then(refresh);
-                },
-            })),
-            row(jsx(DFL.SliderField, {
-                label: "Stick brightness",
-                value: st.rgb.brightness || 160, min: 10, max: 255, step: 5,
-                disabled: !st.sticks_led || st.rgb.mode !== "static",
-                onChange: (v) => setRgb(st.rgb.mode, st.rgb.color, v),
-            })),
-            st.has_power_led ? row(jsx(DFL.ToggleField, {
-                label: "Power LED",
-                description: "Charging / full / low-battery colours and profile flashes",
-                checked: st.power_led !== false,
-                onChange: (v) => setPowerLed(v).then(refresh),
-            })) : null,
-        ] }),
-        jsxs(DFL.PanelSection, { title: "Display", children: [
-            st.has_dualboot ? row(jsx(DFL.ButtonItem, {
-                layout: "below",
-                description: st.dualboot_text,
-                onClick: () => bootAndroid(),
-                children: st.dualboot_label || "Restart into Android",
-            })) : null,
-            st.has_flip ? row(jsx(DFL.ToggleField, {
-                label: "Flip screen",
-                description: "Turn Game Mode the other way up, for controllers that plug into the short side. Applies the next time Game Mode starts (restart the tablet)",
-                checked: !!st.flip,
-                onChange: (v) => setFlip(v).then(refresh),
-            })) : null,
-            row(jsx(DFL.ToggleField, {
-                label: "Short frame limit list",
-                description: shortFpsSteps(),
-                checked: shortFps,
-                onChange: (v) => { try { localStorage.setItem(SHORT_FPS_KEY, v ? "1" : "0"); } catch (e) {} setShortFps(v); applyShortFps(v); },
-            })),
-            st.has_motors ? row(jsx(DFL.ToggleField, {
-                label: "Menu clicks",
-                description: "A light buzz when moving through Steam's menus",
-                checked: st.menu_clicks !== false,
-                onChange: (v) => setMenuClicks(v).then(refresh),
-            })) : null,
-        ] }),
-        st.fit_buttons ? jsxs(DFL.PanelSection, { title: "Buttons", children: [
-            ...[["F13", "KONKR button"], ["F14", "Performance button"]].map(([key, label]) => row(jsx(DFL.DropdownItem, {
-                label,
-                description: (st.buttons || {})[key] === "game"
-                    ? "A controller button: bind it per game in Steam's controller settings (shows as a trackpad click)"
-                    : "",
-                rgOptions: BUTTON_ACTIONS,
-                selectedOption: (st.buttons || {})[key] || "none",
-                onChange: (o) => setButton(key, o.data).then(refresh),
-            }))),
-            note("Home = Steam button · right front button = Quick Access · Power: tap to sleep, hold for the power menu"),
-        ] }) : null,
-        st.has_mcu_link ? jsxs(DFL.PanelSection, { title: "Hardware", children: [
-            row(jsx(DFL.ToggleField, {
-                label: "Controller MCU link",
-                description: "Needed for the KONKR, Performance and Quick Access buttons and stick lighting",
-                checked: st.mcu_enabled,
-                onChange: (v) => setMcu(v).then(() => {
-                    toaster.toast({ title: "Handheld Control", body: v ? "MCU link enabled" : "MCU link disabled" });
-                    refresh();
-                }),
-            })),
-        ] }) : null,
+        ...pages[tab]().filter(Boolean),
     ] });
 }
 
