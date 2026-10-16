@@ -52,14 +52,13 @@ STATE = f"{STATE_DIR}/state.json"
 PROFILES = ("silent", "balanced", "turbo")
 
 # temp °C → pwm 0..255, linearly interpolated
+# Every curve starts at a quiet spin (51) instead of off: a fan that keeps
+# stopping and starting is louder than one that never stops.
 FAN_CURVES = {
-    # Silent leans on the chip's headroom (it throttles past ~100 °C): off
-    # to 60, a murmur through the 70s, full only near the top (GitHub #38).
-    "silent":   [(60, 0), (68, 35), (76, 65), (84, 110), (90, 170), (95, 255)],
-    # Balanced: quieter through 60-85 °C, where games sit; the same full
-    # speed at the top.
-    "balanced": [(50, 35), (60, 50), (70, 80), (80, 130), (88, 200), (95, 255)],
-    "turbo":    [(45, 90), (60, 140), (70, 200), (80, 255)],
+    # Silent leans on the chip's headroom (it throttles past ~100 °C).
+    "silent":   [(65, 51), (76, 77), (82, 102), (88, 153), (94, 204), (98, 255)],
+    "balanced": [(55, 51), (72, 77), (78, 102), (84, 153), (90, 204), (96, 255)],
+    "turbo":    [(45, 51), (66, 77), (74, 102), (80, 153), (85, 204), (90, 255)],
 }
 # fraction of the GPU OPP range: (floor, ceiling)
 GPU_RANGE = {"silent": (0.0, 0.75), "balanced": (0.0, 1.0), "turbo": (0.35, 1.0)}
@@ -266,22 +265,29 @@ def curve_pwm(curve, temp: float) -> int:
     return curve[-1][1]
 
 
-# A burst (waking, opening a menu, a loading screen) runs the big cores flat
-# out for a moment and their hotspot sensors jump 40 °C in under a second.
-# Only a reading that stays hot counts as hot; the chip's own limits (LMh)
-# cover the seconds in between.
-HOT_TICKS = 3
+# The fan moves every FAN_STEP_S: towards the curve by at most FAN_UP up and
+# FAN_DOWN down, in steps of FAN_QUANTUM, following a smoothed temperature.
+# Slow down, quicker up, and no small corrections is what keeps it from
+# hunting. Only DANGER_C skips the ramp.
+FAN_STEP_S = 3.0
+FAN_SMOOTH = 0.5
+FAN_UP = 36
+FAN_DOWN = 6
+FAN_QUANTUM = 8
 DANGER_C = 100
-# Waking from s2idle is such a burst on every core at once: the fan holds its
+# Waking from s2idle runs every core flat out for a moment: the fan holds its
 # speed this long after a resume.
 RESUME_SETTLE_S = 8.0
 
 FIXED_OVERRIDE_ON_C = 90
 FIXED_OVERRIDE_OFF_C = 82
-# Standby (konkr-standby, screen off): fan off while the SoC is below this.
-# The curves never go under their lowest point (35/255 on balanced), so the
-# fan kept spinning all night in standby and drained the battery (Pocket S2).
-STANDBY_FAN_OFF_C = 60
+# Standby (konkr-standby, screen off): off while cool, so it doesn't drain
+# the battery overnight (Pocket S2), a quiet spin while warm, and half speed
+# once hot so the device doesn't cook in a bag.
+STANDBY_FAN_OFF_C = 45
+STANDBY_FAN_HOT_C = 55
+STANDBY_PWM = 51
+STANDBY_HOT_PWM = 128
 
 
 def game_fan(st: dict) -> dict | None:
@@ -309,9 +315,8 @@ class Fan:
         self.failsafe = conf.getint("fan", "failsafe_pwm")
         self.cur = -1
         self.smooth = None
-        self.set_temp = 0.0
+        self.next_step = 0.0
         self.hot_override = False
-        self.hot_ticks = 0
         self.slept = None
         self.settle_until = 0.0
         if self.enabled:
@@ -337,13 +342,14 @@ class Fan:
             self.cur = 255
             self.smooth = None
             return
-        if standby and raw < STANDBY_FAN_OFF_C:
-            if self.cur != 0 and wr(f"{self.dir}/pwm1", 0):
-                log(f"fan: standby, {raw:.0f} C -> off")
-                self.cur = 0
-            # the curve picks up from here on wake (going up is immediate)
+        if standby and raw < DANGER_C:
+            step = (0 if raw < STANDBY_FAN_OFF_C else
+                    STANDBY_PWM if raw < STANDBY_FAN_HOT_C else STANDBY_HOT_PWM)
+            if step != self.cur and wr(f"{self.dir}/pwm1", step):
+                log(f"fan: standby, {raw:.0f} C -> pwm {step}")
+                self.cur = step
+            # the curve picks up from here on wake
             self.smooth = raw
-            self.set_temp = raw
             return
         # Safety: never hold a low fixed speed when hot. Latched with
         # hysteresis: under load the SoC sits right at 90 °C, and flipping
@@ -370,34 +376,25 @@ class Fan:
             profile = fan["curve"]          # a game's own curve (game_fan())
         if fan.get("boost"):
             profile = "turbo"
-        # Smooth short spikes (boot, shader compiles) but react at once to
-        # genuinely hot readings.
-        # Genuinely hot: the chip as a whole at 85 C, or any one sensor at
-        # 95 C. A single hotspot touching 85 for a moment while the rest sat
-        # near 60 used to throw the fan from 30 to 100 % (RP6, Silent).
-        if time.monotonic() < self.settle_until and raw < DANGER_C:
+        now = time.monotonic()
+        if now < self.settle_until and raw < DANGER_C:
             return
-        self.hot_ticks = self.hot_ticks + 1 if (follow >= 85 or raw >= 95) else 0
-        hot = self.hot_ticks >= HOT_TICKS or raw >= DANGER_C
-        if self.smooth is None or hot:
-            self.smooth = follow
-        else:
-            self.smooth = 0.85 * self.smooth + 0.15 * follow
-        temp = self.smooth
-        want = max(self.min_pwm, curve_pwm(FAN_CURVES[profile], temp))
-        if want > self.cur:
-            # up: at most 20 a second (a burst no longer makes it surge),
-            # straight there when the chip is genuinely hot
-            step = want if hot or self.cur < 0 else min(want, self.cur + 20)
-            self.set_temp = temp
-        elif want < self.cur and temp <= self.set_temp - 3:
-            step = max(want, self.cur - 15)      # down: once 3 °C below, ramp
-        else:
+        if raw >= DANGER_C:
+            want = 255
+        elif now < self.next_step:
             return
-        if step != self.cur and wr(f"{self.dir}/pwm1", step):
-            if abs(step - self.cur) >= 40 or self.cur < 0:
-                log(f"fan: {temp:.1f} C (hottest {raw:.0f} C, {hottest_zone()}) -> pwm {step}")
-            self.cur = step
+        else:
+            self.smooth = follow if self.smooth is None else (
+                FAN_SMOOTH * self.smooth + (1 - FAN_SMOOTH) * follow)
+            want = max(self.min_pwm, curve_pwm(FAN_CURVES[profile], self.smooth))
+            if self.cur >= 0:
+                want = max(self.cur - FAN_DOWN, min(self.cur + FAN_UP, want))
+            want = min(255, round(want / FAN_QUANTUM) * FAN_QUANTUM)
+        self.next_step = now + FAN_STEP_S
+        if want != self.cur and wr(f"{self.dir}/pwm1", want):
+            if abs(want - self.cur) >= 40 or self.cur < 0:
+                log(f"fan: {self.smooth or follow:.1f} C (hottest {raw:.0f} C, {hottest_zone()}) -> pwm {want}")
+            self.cur = want
 
     def failsafe_now(self) -> None:
         if self.dir:
