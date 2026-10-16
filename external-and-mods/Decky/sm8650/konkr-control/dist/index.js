@@ -41,6 +41,7 @@ const setSsh = callable("set_ssh");
 const getGames = callable("get_games");
 const setGamePerf = callable("set_game_perf");
 const setChargingFan = callable("set_charging_fan");
+const setPassword = callable("set_password");
 const saveFanCurve = callable("save_fan_curve");
 const renameFanCurve = callable("rename_fan_curve");
 const deleteFanCurve = callable("delete_fan_curve");
@@ -239,6 +240,29 @@ const liveText = (live) => live && live.temp != null
     ? `Now ${live.temp} °C · fan ${Math.round((live.pwm || 0) / 2.55)}%` + (live.target !== live.pwm ? ` → ${Math.round((live.target || 0) / 2.55)}%` : "")
     : "";
 
+// Password for the steamos user (SSH and sudo), typed twice.
+function PasswordModal({ onDone, closeModal }) {
+    const [a, setA] = useState(""), [b, setB] = useState(""), [err, setErr] = useState("");
+    return jsx(DFL.ConfirmModal, {
+        strTitle: "Password for steamos",
+        strOKButtonText: "Save",
+        bOKDisabled: a.length < 4 || a !== b,
+        onOK: () => setPassword(a).then((ok) => {
+            if (!ok) return setErr("Could not set it (use 4 characters or more, no colon)");
+            toaster.toast({ title: "Handheld Control", body: "Password set" });
+            onDone && onDone();
+            closeModal && closeModal();
+        }),
+        onCancel: () => closeModal && closeModal(),
+        closeModal,
+        children: jsxs("div", { style: { display: "flex", flexDirection: "column", gap: "8px" }, children: [
+            jsx(DFL.TextField, { label: "New password", bIsPassword: true, value: a, onChange: (e) => setA(e.target.value) }),
+            jsx(DFL.TextField, { label: "Again", bIsPassword: true, value: b, onChange: (e) => setB(e.target.value) }),
+            jsx("div", { style: { fontSize: "12px", opacity: 0.75 }, children: err || (b && a !== b ? "The two don't match" : "Also used for sudo in Desktop Mode") }),
+        ] }),
+    });
+}
+
 // Rename prompt (Steam's keyboard comes up for the text field).
 function RenameModal({ name, onDone, closeModal }) {
     const [value, setValue] = useState(name);
@@ -430,19 +454,62 @@ const PRIORITIES = [
     { data: "highest", label: "Highest" },
 ];
 
-// One game's own performance settings. The running game is picked by
-// default; any installed game can be set up before it starts. Edits are
-// saved within a moment and konkrd applies them to a running game at once.
+// What a game's own settings change, in a few words.
+function perfSummary(st, appid) {
+    const c = (st.perf_games || {})[String(appid)] || {};
+    const fan = gameFanChoice(st, appid);
+    const bits = [
+        c.profile && (PROFILES.find((p) => p.data === c.profile) || {}).label,
+        c.cpu_max && `CPU ${c.cpu_max}%`,
+        ("gpu_min" in c || "gpu_max" in c) && `GPU ${c.gpu_min ?? 0}–${c.gpu_max ?? 100}%`,
+        c.cores && `cores ${c.cores}`,
+        c.priority && `${c.priority} priority`,
+        fan !== "global" && `fan ${BUILTIN_NAMES[fan] || fan.replace("fixed-", "") + (fan.startsWith("fixed-") ? "%" : "")}`,
+    ].filter(Boolean);
+    return bits.join(" · ");
+}
+
+// Games: an overview (the one running, those with settings of their own, and
+// a picker for the rest); choosing one opens its settings.
 function GamePage({ st, refresh }) {
     const running = st.game && st.game.appid ? st.game.appid : 0;
     const [games, setGames] = useState([]);
-    const [appid, setAppid] = useState(running);
+    const [open, setOpen] = useState(0);
+    useEffect(() => { getGames().then(setGames).catch(() => {}); }, []);
+    const names = new Map(games.map((g) => [g.appid, g.name]));
+    const nameOf = (id) => names.get(id) || gameName(id);
+    if (open) return jsx(GameSettings, { st, refresh, target: open, name: nameOf(open), running, onBack: () => setOpen(0) }, open);
+    const own = [...new Set([...Object.keys(st.perf_games || {}), ...Object.keys(st.fan_games || {})])]
+        .map(Number).filter((id) => id && id !== running);
+    const rest = games.filter((g) => g.appid !== running && !own.includes(g.appid));
+    const card = (id, label) => row(jsx(DFL.ButtonItem, {
+        layout: "below",
+        description: perfSummary(st, id) || "Follows Power and Fan",
+        onClick: () => setOpen(id),
+        children: label,
+    }));
+    return jsxs(SP_JSX.Fragment, { children: [
+        running ? section("Now playing", [card(running, nameOf(running))]) : null,
+        own.length ? section("With their own settings", own.map((id) => card(id, nameOf(id)))) : null,
+        section(own.length || running ? "Other games" : "Games", [
+            !own.length && !running ? note("Every game follows the Power and Fan pages until you give it settings of its own") : null,
+            rest.length ? row(jsx(DFL.DropdownItem, {
+                label: "Set up a game",
+                strDefaultLabel: "Choose…",
+                rgOptions: rest.map((g) => ({ data: g.appid, label: g.name })),
+                selectedOption: null,
+                onChange: (o) => setOpen(o.data),
+            })) : note("No other games installed"),
+        ]),
+    ].filter(Boolean) });
+}
+
+// One game's settings, saved a moment after each change; konkrd applies them
+// whenever the game runs, at once if it already does.
+function GameSettings({ st, refresh, target, name, running, onBack }) {
     const [cfg, setCfg] = useState({});
     const [cores, setCores] = useState("");
     const timer = useRef(null);
-    useEffect(() => { getGames().then(setGames).catch(() => {}); }, []);
-    useEffect(() => { if (!appid && running) setAppid(running); }, [running]);
-    const target = appid || (games[0] && games[0].appid) || 0;
     useEffect(() => {
         const c = (st.perf_games || {})[String(target)] || {};
         setCfg(c);
@@ -456,10 +523,6 @@ function GamePage({ st, refresh }) {
         clearTimeout(timer.current);
         timer.current = setTimeout(() => setGamePerf(target, next).then(refresh), 300);
     };
-    if (!target) return section("Game", [note("No games installed yet")]);
-    const names = new Map(games.map((g) => [g.appid, g.name]));
-    if (running && !names.has(running)) names.set(running, gameName(running));
-    const options = [...names.entries()].map(([id, name]) => ({ data: id, label: id === running ? `▶ ${name}` : name }));
     const profile = cfg.profile || st.profile;
     const [gLo, gHi] = GPU_RANGE[profile] || [0, 100];
     const customGpu = "gpu_min" in cfg || "gpu_max" in cfg;
@@ -472,13 +535,8 @@ function GamePage({ st, refresh }) {
         change({ cores: list });
     };
     return jsxs(SP_JSX.Fragment, { children: [
-        section("Game", [
-            row(jsx(DFL.DropdownItem, {
-                label: "Settings for",
-                rgOptions: options,
-                selectedOption: target,
-                onChange: (o) => setAppid(o.data),
-            })),
+        section(name, [
+            row(jsx(DFL.ButtonItem, { layout: "below", onClick: onBack, children: "‹  All games" })),
             note(isRunning ? "Running now: changes apply right away" : "Applied whenever this game starts"),
         ]),
         section("Performance", [
@@ -544,9 +602,9 @@ function GamePage({ st, refresh }) {
                 onChange: (o) => setGameFan(target, o.data).then(refresh),
             })),
         ]),
-        Object.keys(cfg).length ? section("", [row(jsx(DFL.ButtonItem, {
+        Object.keys(cfg).length || gameFanChoice(st, target) !== "global" ? section("", [row(jsx(DFL.ButtonItem, {
             layout: "below",
-            onClick: () => { setCfg({}); setCores(""); setGamePerf(target, {}).then(() => setGameFan(target, "global")).then(refresh); },
+            onClick: () => { setGamePerf(target, {}).then(() => setGameFan(target, "global")).then(refresh); onBack(); },
             children: "Reset this game",
         }))]) : null,
     ].filter(Boolean) });
@@ -589,9 +647,18 @@ function Content() {
     const [editing, setEditing] = useState(null);
     const [tab, setTab] = useState(savedTab());
     const pickTab = (id) => { setTab(id); setEditing(null); try { localStorage.setItem(TAB_KEY, id); } catch (e) {} };
+    // Lights change through konkrd's request socket, which answers before
+    // konkrd has saved: show the pick at once and keep a refresh that lands
+    // in between from putting the old one back.
+    const rgbTouched = useRef(0);
     const refresh = useCallback(() => {
-        getState().then(setSt).catch(() => {});
+        getState().then((n) => setSt((prev) => (prev && Date.now() - rgbTouched.current < 2500 ? { ...n, rgb: prev.rgb } : n))).catch(() => {});
     }, []);
+    const lights = (mode, color, brightness) => {
+        rgbTouched.current = Date.now();
+        setSt((prev) => ({ ...prev, rgb: { mode, color, brightness } }));
+        return setRgb(mode, color, brightness);
+    };
     useEffect(() => {
         refresh();
         const t = setInterval(refresh, 2000);
@@ -677,19 +744,19 @@ function Content() {
                     })(),
                     onChange: (o) => {
                         const p = o.data === "custom" ? { mode: "static", color: hueHex(200) } : RGB_PRESETS[o.data];
-                        setRgb(p.mode, p.color, st.rgb.brightness || 160).then(refresh);
+                        lights(p.mode, p.color, st.rgb.brightness || 160);
                     },
                 })),
                 st.sticks_led && st.rgb.mode === "static" && !RGB_PRESETS.some((p) => p.color === st.rgb.color) ? row(jsx(LiveSlider, {
                     label: "Colour",
                     value: hexHue(st.rgb.color), min: 0, max: 359, step: 3,
-                    onChange: (v) => setRgb("static", hueHex(v), st.rgb.brightness || 160),
+                    onChange: (v) => lights("static", hueHex(v), st.rgb.brightness || 160),
                 })) : null,
                 st.sticks_led && st.rgb.mode === "static" ? row(jsx(LiveSlider, {
                     label: "Brightness",
                     value: Math.round((st.rgb.brightness || 160) / 2.55), min: 5, max: 100, step: 5,
                     showValue: true, valueSuffix: "%",
-                    onChange: (v) => setRgb(st.rgb.mode, st.rgb.color, Math.round(v * 2.55)),
+                    onChange: (v) => lights(st.rgb.mode, st.rgb.color, Math.round(v * 2.55)),
                 })) : null,
                 st.has_power_led ? row(jsx(DFL.ToggleField, {
                     label: "Power LED",
@@ -716,9 +783,17 @@ function Content() {
                 row(jsx(DFL.Field, { label: "Kernel", description: st.system.kernel, focusable: true })),
                 row(jsx(DFL.ToggleField, {
                     label: "Remote access (SSH)",
-                    description: st.system.ssh ? `ssh steamos@${st.system.ip || "this device"}` : "Log in from a PC over the network",
+                    description: st.system.ssh ? `From a PC: ssh steamos@${st.system.ip || "this device"}`
+                        : st.system.has_password ? "Log in from a PC on the same network"
+                        : "Set a password for steamos first: SSH logs in with it",
                     checked: !!st.system.ssh,
+                    disabled: !st.system.ssh && !st.system.has_password,
                     onChange: (v) => setSsh(v).then(refresh),
+                })),
+                row(jsx(DFL.ButtonItem, {
+                    layout: "below",
+                    onClick: () => DFL.showModal(jsx(PasswordModal, { onDone: refresh })),
+                    children: st.system.has_password ? "Change password" : "Set a password",
                 })),
             ]) : null,
             section("Device", [

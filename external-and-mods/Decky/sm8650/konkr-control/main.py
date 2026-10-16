@@ -243,7 +243,19 @@ def system_info() -> dict[str, Any]:
         "kernel": os.uname().release,
         "ip": ", ".join(l.split()[3].split("/")[0] for l in ips if len(l.split()) > 3),
         "ssh": subprocess.run(["systemctl", "is-active", "--quiet", "sshd"]).returncode == 0,
+        "has_password": has_password(),
     }
+
+
+def has_password(user: str = "steamos") -> bool:
+    """SSH logs in with the user's password (root login is off), and sshd
+    turns away an empty one."""
+    for line in rd("/etc/shadow").splitlines():
+        name, _, rest = line.partition(":")
+        if name == user:
+            pw = rest.split(":", 1)[0]
+            return bool(pw) and pw[0] not in "!*"
+    return False
 
 
 def mode_of(st: dict[str, Any]) -> tuple[str, bool]:
@@ -345,8 +357,18 @@ class Plugin:
         return await asyncio.to_thread(bypass_state)
 
     async def set_ssh(self, on: bool = False, **_: Any) -> bool:
+        if on and not has_password():
+            return False
         await asyncio.to_thread(subprocess.run, ["systemctl", "enable" if on else "disable", "--now", "sshd"])
         return system_info()["ssh"]
+
+    async def set_password(self, password: str = "", **_: Any) -> bool:
+        """Password for the steamos user (sudo and SSH use it)."""
+        if len(password) < 4 or any(c in password for c in ":\n"):
+            return False
+        r = await asyncio.to_thread(subprocess.run, ["chpasswd"], input=f"steamos:{password}\n",
+                                    text=True, capture_output=True)
+        return r.returncode == 0
 
     async def set_charge_limit(self, level: int = 100, **_: Any) -> int | None:
         """Stop charging at level % (100 = charge to full)."""
