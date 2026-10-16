@@ -12,7 +12,8 @@ from MaSi's **SteamOS-ARM-SM8550**, so everything MaSi credits below still appli
 | **MaSi / SteamOS-ARM-SM8550** | https://github.com/MaSieS4Fun/SteamOS-ARM-SM8550 | The whole base: image builder, SteamOS ARM overlay, Box64/Decky setup, scripts |
 | **ROCKNIX SM8650** | https://github.com/ROCKNIX/distribution | Kernel recipe (20260901, Linux 7.2.8), Pocket FIT panel/touch/MCU patches, DPU inline rotation and QSEED detail enhancer (tiopex), device tree, firmware, audio UCM |
 | **ROCKNIX SM8550** | https://github.com/ROCKNIX/distribution | Kernel recipe, patches and device trees for all 13 SM8550 handhelds, firmware, audio UCM, controller event maps |
-| **ROCKNIX ABL** | https://github.com/ROCKNIX/abl | Bootloader with device model selection |
+| **OpenABL** | https://github.com/OpenHandheldCollective/OpenABL | Bootloader menu bundled on every image (ROCKNIX ABL's successor, same developers), its flash scripts |
+| **ROCKNIX ABL** | https://github.com/ROCKNIX/abl | Bootloader with device model selection (bundled up to 1.4) |
 | **ROCKNIX MangoHud patches** | https://github.com/ROCKNIX/distribution/tree/next/projects/ROCKNIX/packages/apps/mangohud/patches | Qualcomm GPU, battery and RAM support for Steam's performance overlay (`external-and-mods/MangoHud-qualcomm/`) |
 | **ArmadaOS** | https://github.com/armada-os/armada | Reference for SM8550 device quirks: IRQ affinity for the Adreno 740, AYANEO Pocket button codes, Thor/DS panel and backlight layout. Kernel patches used on 8 Gen 2 and 8 Gen 3: the s2idle series (PCIe suspend OPP and memory floor, RPMh suspend states for regulators, AudioReach graphs across suspend, tsens, geni, ICE and UFS fixes), PCIe iommu-map cell count, fan while charging in s2idle, wcd939x jack resume, and the SM8650 AYANEO base wake and codec-rail fixes |
 | **bylaws** | https://github.com/bylaws/linux | arm64 unaligned atomics emulation (via ArmadaOS) |

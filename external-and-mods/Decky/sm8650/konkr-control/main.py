@@ -193,7 +193,7 @@ class Plugin:
             "has_flip": tablet(),
             "flip": os.path.exists(FLIP),
             # Tablets: SteamOS on the microSD card next to Android. Handhelds:
-            # ROCKNIX ABL, whose menu picks Android or Linux.
+            # OpenABL / ROCKNIX ABL, whose menu picks Android or Linux.
             "has_dualboot": not tablet() or subprocess.run(["sh", "-c", "findmnt -no SOURCE / | grep -q mmcblk"]).returncode == 0,
             "dualboot_label": ("Restart into ZUI" if gen5() else "Restart into ZUXOS") if tablet() else "Restart into Android",
             "dualboot_text": ("SteamOS runs from the microSD card. This restarts into "
@@ -303,8 +303,8 @@ class Plugin:
         """Restart into Android: tablets switch back to their Android (ZUXOS or
         ZUI), handhelds restart into the ABL's boot menu."""
         # Gen 5: copy Android's boot image back into boot_a. Gen 4: make slot A active.
-        # Handhelds: restart into ROCKNIX ABL's menu (its boot mode lives in a
-        # UEFI variable Linux can't set).
+        # Handhelds: restart into the ABL's menu. OpenABL keeps its boot mode
+        # in a UEFI variable, out of reach while we boot without EFI.
         if not tablet():
             tool = ["systemctl", "reboot", "--reboot-argument=bootloader"]
         else:
