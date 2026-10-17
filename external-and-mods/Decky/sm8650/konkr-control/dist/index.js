@@ -635,27 +635,35 @@ function nextCurveName(mine) {
     for (let i = 1; ; i++) if (!mine[`My curve ${i}`]) return `My curve ${i}`;
 }
 
-// One page at a time, picked in a bar of tabs; the last one is remembered.
+// One page at a time; the last one is remembered.
 const TAB_KEY = "handheld-control:tab";
 function savedTab() {
     try { return ["power", "fan", "game", "lights", "more"].includes(localStorage.getItem(TAB_KEY)) ? localStorage.getItem(TAB_KEY) : "power"; } catch (e) { return "power"; }
 }
-function TabBar({ tabs, tab, onTab }) {
-    return jsx(DFL.Focusable, {
-        "flow-children": "horizontal",
-        style: { display: "flex", gap: "4px", padding: "3px", borderRadius: "8px", background: "#ffffff0d" },
-        children: tabs.map((t) => jsx(DFL.DialogButton, {
-            onClick: () => onTab(t.id),
-            style: {
-                flex: 1, minWidth: 0, padding: "6px 0", fontSize: "13px", borderRadius: "6px",
-                background: t.id === tab ? "#4cc2ff" : "transparent",
-                color: t.id === tab ? "#0b1622" : "#ffffffc0",
-                fontWeight: t.id === tab ? 700 : 500,
-            },
-            children: t.label,
-        }, t.id)),
-    });
-}
+// Steam's own tabs, as other Quick Access plugins use: L1/R1 switch pages.
+// They need a fixed box to scroll in, and icons so five of them fit.
+const TAB_CSS = `
+  .hc-tabs > div > div:first-child { background: #0D141C; box-shadow: none; backdrop-filter: none; }
+  .hc-tabs [role="tabpanel"] { padding-left: 8px !important; padding-right: 8px !important; }
+  .hc-tabs [role="tablist"] { display: flex; flex-wrap: nowrap; justify-content: center; }
+  .hc-tabs [role="tab"] { flex: 0 1 auto; min-width: 0; box-sizing: border-box; padding-left: 6px !important;
+    padding-right: 6px !important; display: flex !important; align-items: center; justify-content: center; }
+  .hc-tabs [role="tab"] svg { display: block; margin: 0; }
+  .hc-tabs .hc-tab-content { padding-bottom: 96px; }
+`;
+const icon = (...paths) => jsx("svg", {
+    width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2,
+    strokeLinecap: "round", strokeLinejoin: "round", style: { display: "block" },
+    children: paths.map((d, i) => jsx("path", { d }, i)),
+});
+const TAB_ICONS = {
+    power: icon("M13 2 3 14h9l-1 8 10-12h-9l1-8z"),
+    fan: icon("M10.827 16.379a6.082 6.082 0 0 1-8.618-7.002l5.412 1.45a6.082 6.082 0 0 1 7.002-8.618l-1.45 5.412a6.082 6.082 0 0 1 8.618 7.002l-5.412-1.45a6.082 6.082 0 0 1-7.002 8.618l1.45-5.412Z", "M12 12v.01"),
+    game: icon("M6 11h4", "M8 9v4", "M15 12h.01", "M18 10h.01",
+        "M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"),
+    lights: icon("M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5", "M9 18h6", "M10 22h4"),
+    more: icon("M4 21v-7", "M4 10V3", "M12 21v-9", "M12 8V3", "M20 21v-5", "M20 12V3", "M1 14h6", "M9 8h6", "M17 16h6"),
+};
 
 function Content() {
     const withPick = (n) => (n && Date.now() - rgbPick.at < 2500 ? { ...n, rgb: rgbPick.rgb } : n);
@@ -838,14 +846,24 @@ function Content() {
             ]),
         ],
     };
-    return jsxs(SP_JSX.Fragment, { children: [
-        jsxs(DFL.PanelSection, { children: [
-            row(jsx("div", { style: { fontSize: "12px", opacity: 0.8, textAlign: "center" },
-                children: st.daemon ? `${prof.label}${gameProf ? ` → ${gameProf.label} for this game` : ""} · ${status}` : `${st.daemon_name || "konkrd"} is not running` })),
-            row(jsx(TabBar, { tabs, tab, onTab: pickTab })),
-        ] }),
-        ...pages[tab]().filter(Boolean),
-    ] });
+    const header = jsx("div", { style: { fontSize: "12px", opacity: 0.8, textAlign: "center", padding: "4px 0" },
+        children: st.daemon ? `${prof.label}${gameProf ? ` → ${gameProf.label} for this game` : ""} · ${status}` : `${st.daemon_name || "konkrd"} is not running` });
+    return jsxs("div", {
+        className: "hc-tabs",
+        style: { height: "95%", width: "300px", position: "fixed", marginTop: "-12px", overflow: "hidden" },
+        children: [
+            jsx("style", { children: TAB_CSS }),
+            jsx(DFL.Tabs, {
+                activeTab: tab,
+                onShowTab: pickTab,
+                tabs: tabs.map((t) => ({
+                    id: t.id,
+                    title: TAB_ICONS[t.id],
+                    content: jsxs("div", { className: "hc-tab-content", children: [header, ...pages[t.id]().filter(Boolean)] }),
+                })),
+            }),
+        ],
+    });
 }
 
 // Toast whenever the profile or fan boost changes (KONKR button, konkrctl or
