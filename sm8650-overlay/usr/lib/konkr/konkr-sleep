@@ -177,6 +177,50 @@ xhci_on() {
     echo "$name" >"$XHCI_DRV/bind" 2>/dev/null || log "usb: rebind $name failed"
   done <"$XHCI_STATE"
   rm -f "$XHCI_STATE"
+  systemd-run --no-block --collect --unit=konkr-pad-watch /usr/lib/konkr/konkr-sleep pad-watch \
+    >/dev/null 2>&1 || true
+}
+
+# The pad behind that controller is a USB device of the controller MCU, which
+# attaches again on its own, normally a second after the rebind. After a 7 h
+# sleep it never did (2026-10-17): the touchscreen worked, the controls were
+# dead until a reboot. Another rebind brought it back then, so give it 15 s,
+# rebind, and as a last resort make the MCU re-enumerate the pad by switching
+# its mode over the UART and back.
+pad_present() {
+  local d
+  for d in /sys/bus/pci/drivers/xhci-pci-renesas/*/usb*/*/idVendor; do
+    [[ -e $d ]] || continue
+    case "$(<"$d"):$(<"${d%/*}/idProduct")" in 4001:0428|045e:028e) return 0 ;; esac
+  done
+  return 1
+}
+pad_wait() {
+  local i
+  for ((i = 0; i < $1; i++)); do
+    pad_present && return 0
+    [[ -e $XHCI_STATE ]] && exit 0   # sleeping again
+    sleep 1
+  done
+  pad_present
+}
+pad_watch() {
+  local dev mode
+  pad_wait 15 && return 0
+  log "pad: not back 15 s after waking, rebinding the USB controller"
+  for dev in /sys/bus/pci/devices/*; do
+    [[ $(<"$dev/vendor") == 0x1912 ]] || continue   # Renesas
+    [[ -e $dev/driver ]] && { echo "${dev##*/}" >"$XHCI_DRV/unbind"; sleep 1; }
+    echo "${dev##*/}" >"$XHCI_DRV/bind" 2>/dev/null || log "pad: rebind ${dev##*/} failed"
+  done
+  if pad_wait 15; then log "pad: back after the rebind"; return 0; fi
+  mode=$(ls /sys/bus/serial/devices/*/gamepad_mode 2>/dev/null | head -1)
+  if [[ -n $mode ]]; then
+    log "pad: still missing, switching the controller mode to make it re-enumerate"
+    echo xbox >"$mode"; sleep 3; echo default >"$mode"
+    if pad_wait 15; then log "pad: back after the mode switch"; return 0; fi
+  fi
+  log "pad: still missing, restart to get the controls back"
 }
 
 # 8 Gen 3 on our 7.2 kernel: the kernel itself handles Wi-Fi, audio graphs,
@@ -208,6 +252,7 @@ lights_off() {
 
 pre() {
   local n u x
+  systemctl stop konkr-pad-watch.service >/dev/null 2>&1
   lights_off
   report_start
   wifi_mark
@@ -289,6 +334,7 @@ case "${1:-}" in
     [[ -d /sys/module/${WIFI_MODS[0]} ]] || modprobe "${WIFI_MODS[0]}" ;;
   standby-screen-on) gamescope_screen 0 ;;
   wifi-watch) exec /usr/lib/steamos-arm/steamos-arm-wifi-wake watch ;;
-  *) echo "usage: konkr-sleep pre|post|standby-pre|standby-audio-on|standby-post|standby-screen-on|wifi-watch" >&2; exit 2 ;;
+  pad-watch) pad_watch ;;
+  *) echo "usage: konkr-sleep pre|post|standby-pre|standby-audio-on|standby-post|standby-screen-on|wifi-watch|pad-watch" >&2; exit 2 ;;
 esac
 exit 0
