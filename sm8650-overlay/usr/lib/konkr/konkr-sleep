@@ -177,50 +177,32 @@ xhci_on() {
     echo "$name" >"$XHCI_DRV/bind" 2>/dev/null || log "usb: rebind $name failed"
   done <"$XHCI_STATE"
   rm -f "$XHCI_STATE"
-  systemd-run --no-block --collect --unit=konkr-pad-watch /usr/lib/konkr/konkr-sleep pad-watch \
-    >/dev/null 2>&1 || true
 }
 
-# The pad behind that controller is a USB device of the controller MCU, which
-# attaches again on its own, normally a second after the rebind. After a 7 h
-# sleep it never did (2026-10-17): the touchscreen worked, the controls were
-# dead until a reboot. Another rebind brought it back then, so give it 15 s,
-# rebind, and as a last resort make the MCU re-enumerate the pad by switching
-# its mode over the UART and back.
-pad_present() {
-  local d
-  for d in /sys/bus/pci/drivers/xhci-pci-renesas/*/usb*/*/idVendor; do
-    [[ -e $d ]] || continue
-    case "$(<"$d"):$(<"${d%/*}/idProduct")" in 4001:0428|045e:028e) return 0 ;; esac
+# The controller MCU runs from the fan's 5 V supply, which the kernel cuts
+# for the sleep (patch 0065). Kernels before its resume fix only gave it back
+# when the fan spun up, so after a sleep with the fan stopped the pad and the
+# MCU stayed dead (2026-10-17). Switching pwm-fan's enable mode to 2 and back
+# turns the supply on without spinning the fan. The MCU then boots without
+# the enable frame its driver sent at resume, so rebind the driver to send it.
+fan_supply_on() {
+  local h r off=
+  for r in /sys/class/regulator/*; do
+    [[ $(<"$r/name") == fan_pwr && $(<"$r/state") == disabled ]] && off=1
+  done 2>/dev/null
+  [[ -n $off ]] || return 0
+  for h in /sys/class/hwmon/hwmon*; do
+    [[ -r $h/pwm1_enable && $(<"$h/name") == pwmfan ]] || continue
+    [[ $(<"$h/pwm1_enable") == 1 ]] || continue
+    echo 2 >"$h/pwm1_enable" && echo 1 >"$h/pwm1_enable"
   done
-  return 1
-}
-pad_wait() {
-  local i
-  for ((i = 0; i < $1; i++)); do
-    pad_present && return 0
-    [[ -e $XHCI_STATE ]] && exit 0   # sleeping again
-    sleep 1
+  sleep 0.7   # MCU boot
+  for h in /sys/bus/serial/drivers/konkr_sysbtn/serial*; do
+    [[ -e $h ]] || continue
+    echo "${h##*/}" >/sys/bus/serial/drivers/konkr_sysbtn/unbind
+    echo "${h##*/}" >/sys/bus/serial/drivers/konkr_sysbtn/bind
   done
-  pad_present
-}
-pad_watch() {
-  local dev mode
-  pad_wait 15 && return 0
-  log "pad: not back 15 s after waking, rebinding the USB controller"
-  for dev in /sys/bus/pci/devices/*; do
-    [[ $(<"$dev/vendor") == 0x1912 ]] || continue   # Renesas
-    [[ -e $dev/driver ]] && { echo "${dev##*/}" >"$XHCI_DRV/unbind"; sleep 1; }
-    echo "${dev##*/}" >"$XHCI_DRV/bind" 2>/dev/null || log "pad: rebind ${dev##*/} failed"
-  done
-  if pad_wait 15; then log "pad: back after the rebind"; return 0; fi
-  mode=$(ls /sys/bus/serial/devices/*/gamepad_mode 2>/dev/null | head -1)
-  if [[ -n $mode ]]; then
-    log "pad: still missing, switching the controller mode to make it re-enumerate"
-    echo xbox >"$mode"; sleep 3; echo default >"$mode"
-    if pad_wait 15; then log "pad: back after the mode switch"; return 0; fi
-  fi
-  log "pad: still missing, restart to get the controls back"
+  log "post: fan supply was off, powered the controller MCU back on"
 }
 
 # 8 Gen 3 on our 7.2 kernel: the kernel itself handles Wi-Fi, audio graphs,
@@ -252,7 +234,6 @@ lights_off() {
 
 pre() {
   local n u x
-  systemctl stop konkr-pad-watch.service >/dev/null 2>&1
   lights_off
   report_start
   wifi_mark
@@ -297,6 +278,7 @@ touch_on() {
 post() {
   report_end
   ufs_on
+  fan_supply_on
   xhci_on
   wifi_watch_start
   if light; then
@@ -334,7 +316,6 @@ case "${1:-}" in
     [[ -d /sys/module/${WIFI_MODS[0]} ]] || modprobe "${WIFI_MODS[0]}" ;;
   standby-screen-on) gamescope_screen 0 ;;
   wifi-watch) exec /usr/lib/steamos-arm/steamos-arm-wifi-wake watch ;;
-  pad-watch) pad_watch ;;
-  *) echo "usage: konkr-sleep pre|post|standby-pre|standby-audio-on|standby-post|standby-screen-on|wifi-watch|pad-watch" >&2; exit 2 ;;
+  *) echo "usage: konkr-sleep pre|post|standby-pre|standby-audio-on|standby-post|standby-screen-on|wifi-watch" >&2; exit 2 ;;
 esac
 exit 0
