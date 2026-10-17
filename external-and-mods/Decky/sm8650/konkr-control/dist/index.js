@@ -240,16 +240,17 @@ const liveText = (live) => live && live.temp != null
     ? `Now ${live.temp} °C · fan ${Math.round((live.pwm || 0) / 2.55)}%` + (live.target !== live.pwm ? ` → ${Math.round((live.target || 0) / 2.55)}%` : "")
     : "";
 
-// Password for the steamos user (SSH and sudo), typed twice.
-function PasswordModal({ onDone, closeModal }) {
+// Password for the steamos user (SSH and sudo), typed twice. An existing one
+// is simply replaced: the panel runs as root, so the old one isn't asked for.
+function PasswordModal({ replace, onDone, closeModal }) {
     const [a, setA] = useState(""), [b, setB] = useState(""), [err, setErr] = useState("");
     return jsx(DFL.ConfirmModal, {
-        strTitle: "Password for steamos",
+        strTitle: replace ? "New password for steamos" : "Password for steamos",
         strOKButtonText: "Save",
         bOKDisabled: a.length < 4 || a !== b,
         onOK: () => setPassword(a).then((ok) => {
             if (!ok) return setErr("Could not set it (use 4 characters or more, no colon)");
-            toaster.toast({ title: "Handheld Control", body: "Password set" });
+            toaster.toast({ title: "Handheld Control", body: replace ? "Password changed" : "Password set" });
             onDone && onDone();
             closeModal && closeModal();
         }),
@@ -258,7 +259,7 @@ function PasswordModal({ onDone, closeModal }) {
         children: jsxs("div", { style: { display: "flex", flexDirection: "column", gap: "8px" }, children: [
             jsx(DFL.TextField, { label: "New password", bIsPassword: true, value: a, onChange: (e) => setA(e.target.value) }),
             jsx(DFL.TextField, { label: "Again", bIsPassword: true, value: b, onChange: (e) => setB(e.target.value) }),
-            jsx("div", { style: { fontSize: "12px", opacity: 0.75 }, children: err || (b && a !== b ? "The two don't match" : "Also used for sudo in Desktop Mode") }),
+            jsx("div", { style: { fontSize: "12px", opacity: 0.75 }, children: err || (b && a !== b ? "The two don't match" : replace ? "Replaces the current one, for SSH and sudo" : "Also used for sudo in Desktop Mode") }),
         ] }),
     });
 }
@@ -471,10 +472,18 @@ function perfSummary(st, appid) {
 
 // Games: an overview (the one running, those with settings of their own, and
 // a picker for the rest); choosing one opens its settings.
+// Picking from a dropdown closes Quick Access for the menu and mounts the
+// panel again afterwards, so what has to outlive that lives out here.
+let openGame = 0;
+let lastState = null;
+let rgbPick = { rgb: null, at: 0 };
+let gameEdit = { target: 0, cfg: {}, at: 0 };
+
 function GamePage({ st, refresh }) {
     const running = st.game && st.game.appid ? st.game.appid : 0;
     const [games, setGames] = useState([]);
-    const [open, setOpen] = useState(0);
+    const [open, setOpenState] = useState(openGame);
+    const setOpen = (id) => { openGame = id; setOpenState(id); };
     useEffect(() => { getGames().then(setGames).catch(() => {}); }, []);
     const names = new Map(games.map((g) => [g.appid, g.name]));
     const nameOf = (id) => names.get(id) || gameName(id);
@@ -511,17 +520,24 @@ function GameSettings({ st, refresh, target, name, running, onBack }) {
     const [cores, setCores] = useState("");
     const timer = useRef(null);
     useEffect(() => {
-        const c = (st.perf_games || {})[String(target)] || {};
+        const c = gameEdit.target === target && Date.now() - gameEdit.at < 3000
+            ? gameEdit.cfg : (st.perf_games || {})[String(target)] || {};
         setCfg(c);
         setCores(c.cores && !["all", "big"].includes(c.cores) ? c.cores : "");
     }, [target]);
-    useEffect(() => () => clearTimeout(timer.current), []);
+    // Unmounted with a save still waiting (a dropdown pick does that): send it now.
+    useEffect(() => () => {
+        if (!timer.current) return;
+        clearTimeout(timer.current);
+        setGamePerf(gameEdit.target, gameEdit.cfg);
+    }, []);
     const change = (patch) => {
         const next = { ...cfg, ...patch };
         Object.keys(next).forEach((k) => next[k] === undefined && delete next[k]);
         setCfg(next);
+        gameEdit = { target, cfg: next, at: Date.now() };
         clearTimeout(timer.current);
-        timer.current = setTimeout(() => setGamePerf(target, next).then(refresh), 300);
+        timer.current = setTimeout(() => { timer.current = null; setGamePerf(target, next).then(refresh); }, 300);
     };
     const profile = cfg.profile || st.profile;
     const [gLo, gHi] = GPU_RANGE[profile] || [0, 100];
@@ -642,7 +658,9 @@ function TabBar({ tabs, tab, onTab }) {
 }
 
 function Content() {
-    const [st, setSt] = useState(null);
+    const withPick = (n) => (n && Date.now() - rgbPick.at < 2500 ? { ...n, rgb: rgbPick.rgb } : n);
+    const [st, setStState] = useState(() => withPick(lastState));
+    const setSt = (n) => setStState((lastState = n));
     const [shortFps, setShortFps] = useState(shortFpsWanted());
     const [editing, setEditing] = useState(null);
     const [tab, setTab] = useState(savedTab());
@@ -650,13 +668,12 @@ function Content() {
     // Lights change through konkrd's request socket, which answers before
     // konkrd has saved: show the pick at once and keep a refresh that lands
     // in between from putting the old one back.
-    const rgbTouched = useRef(0);
     const refresh = useCallback(() => {
-        getState().then((n) => setSt((prev) => (prev && Date.now() - rgbTouched.current < 2500 ? { ...n, rgb: prev.rgb } : n))).catch(() => {});
+        getState().then((n) => setSt(withPick(n))).catch(() => {});
     }, []);
     const lights = (mode, color, brightness) => {
-        rgbTouched.current = Date.now();
-        setSt((prev) => ({ ...prev, rgb: { mode, color, brightness } }));
+        rgbPick = { rgb: { mode, color, brightness }, at: Date.now() };
+        setSt(withPick(lastState));
         return setRgb(mode, color, brightness);
     };
     useEffect(() => {
@@ -792,7 +809,7 @@ function Content() {
                 })),
                 row(jsx(DFL.ButtonItem, {
                     layout: "below",
-                    onClick: () => DFL.showModal(jsx(PasswordModal, { onDone: refresh })),
+                    onClick: () => DFL.showModal(jsx(PasswordModal, { replace: st.system.has_password, onDone: refresh })),
                     children: st.system.has_password ? "Change password" : "Set a password",
                 })),
             ]) : null,

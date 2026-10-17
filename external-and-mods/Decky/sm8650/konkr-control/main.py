@@ -373,7 +373,7 @@ class Plugin:
     async def set_charge_limit(self, level: int = 100, **_: Any) -> int | None:
         """Stop charging at level % (100 = charge to full)."""
         level = int(level)
-        await asyncio.to_thread(subprocess.run, ["busctl", "--system", "set-property", *POWER[3:5], *LIMIT,
+        await asyncio.to_thread(subprocess.run, ["busctl", "--system", "set-property", "--", *POWER[3:5], *LIMIT,
                                                  "i", str(-1 if level >= 100 else max(55, level))],
                                 capture_output=True, timeout=5)
         return await asyncio.to_thread(charge_limit)
