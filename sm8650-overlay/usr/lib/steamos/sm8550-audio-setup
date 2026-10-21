@@ -29,9 +29,7 @@ for d in /usr/share/alsa/ucm2/AYN /usr/share/alsa/ucm2/AYANEO /usr/share/alsa/uc
   find "$d" -type f -exec chmod 0644 {} + 2>/dev/null
 done
 
-# Retroid Pocket (SM8250): WirePlumber applies the UCM itself, there is
-# nothing to set up and no card name below to wait for (it sat out the whole
-# 20 s wait on every boot).
+# Retroid Pocket (SM8250): WirePlumber applies the UCM, nothing to wait for.
 if tr '\0' '\n' </sys/firmware/devicetree/base/compatible 2>/dev/null | grep -q '^retroidpocket,'; then
   log "Retroid Pocket card: UCM applied by WirePlumber"
   exit 0
