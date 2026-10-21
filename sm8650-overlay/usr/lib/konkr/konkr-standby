@@ -143,7 +143,7 @@ def game_pids() -> list[int]:
 
 def power_key_fd() -> int | None:
     for e in glob.glob("/sys/class/input/event*"):
-        if rd(f"{e}/device/name") == "pmic_pwrkey":
+        if rd(f"{e}/device/name") in ("pmic_pwrkey", "pm8941_pwrkey"):  # SM8650 / SM8250
             return os.open(f"/dev/input/{os.path.basename(e)}", os.O_RDONLY)
     return None
 
