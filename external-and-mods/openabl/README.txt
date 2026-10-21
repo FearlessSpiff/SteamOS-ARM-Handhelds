@@ -18,7 +18,10 @@ run a script line by line and don't show its output.
    copy them to a PC and keep them.
 3. Run flash_abl.sh as root. It writes OpenABL to both slots.
 4. Restart holding Volume Down to open the menu (Volume to move, Power to
-   select). Set Device model, set Boot mode to Linux, then Start.
+   select). Set Device model, set Boot mode to Linux (not UEFI, the image
+   has no UEFI loader and the screen stays black), then Start.
+   Retroid Pocket 5 and Flip 2 each come in two panel versions: if the
+   screen stays black with the plain model, try the one marked Visionox.
 
 At power-on: nothing held starts the chosen boot mode, Volume Down opens the
 menu, Volume Up starts Android when the boot mode is Linux.
