@@ -33,7 +33,11 @@ if tr '\0' '\n' </sys/firmware/devicetree/base/compatible 2>/dev/null | grep -q 
     timeout 8 wpctl status 2>/dev/null | grep -q 'Speakers' && break
     sleep 1
   done
-  # WirePlumber's own default-nodes never picks a sink on these boards.
+  # WirePlumber's own default-nodes never picks a sink on these boards. Headphones
+  # already plugged in at boot get the sound, not the speakers.
+  if amixer -c RetroidPocket cget iface=CARD,name='Headphone Jack' 2>/dev/null | grep -q ': values=on'; then
+    SINK=alsa_output.platform-sound.HiFi__Headphones__sink
+  fi
   timeout 8 pw-metadata -n default 0 default.audio.sink "{\"name\":\"${SINK}\"}" Spa:String:JSON >/dev/null || exit 1
   # First start on this install: the HiFi route comes up near full scale
   # (0.84-1.00, it varies), so start at a moderate level instead.
