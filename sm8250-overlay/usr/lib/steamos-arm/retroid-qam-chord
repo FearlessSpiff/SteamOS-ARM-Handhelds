@@ -51,7 +51,7 @@ def held(report: bytes, button: tuple[int, int]) -> bool:
 def watch(path: str) -> None:
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     log(f"watch {path}")
-    chord = False
+    pending = False
     last = 0.0
     try:
         while True:
@@ -59,14 +59,17 @@ def watch(path: str) -> None:
             report = os.read(fd, 64)
             if len(report) < 16 or report[2] != 0x09:
                 continue
-            now = held(report, STEAM) and held(report, A)
-            # Our own Quick Access press shows up in these reports too: one
-            # trigger per second, or it opens and closes the menu again.
-            if now and not chord and time.monotonic() - last > 1.0:
-                last = time.monotonic()
-                log("Steam + A")
-                quick_access()
-            chord = now
+            if held(report, STEAM) and held(report, A):
+                pending = True
+            # Steam ignores Quick Access while its own button is down: press
+            # it once both are let go. Our own press shows up in these reports
+            # too, so at most once a second.
+            elif pending and not held(report, STEAM) and not held(report, A):
+                pending = False
+                if time.monotonic() - last > 1.0:
+                    last = time.monotonic()
+                    log("Steam + A")
+                    quick_access()
     finally:
         os.close(fd)
 
