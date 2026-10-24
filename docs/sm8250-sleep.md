@@ -2,7 +2,7 @@
 
 Notes from tracking down the battery drain asleep on a Retroid Pocket Flip 2
 (Visionox panel), 2026-10-23. The kernel fixes below are in
-`external-and-mods/kernel-sm8250/patches` (0017-0025) and
+`external-and-mods/kernel-sm8250/patches` (0017-0026) and
 `dts/sm8250-retroidpocket-common.dtsi.append`. With them, s2idle is the
 default sleep mode on the Retroid 865 boards (RP5, Flip 2, Mini, Mini V2;
 tested on the Flip 2). The other 865 handhelds stay on standby. The SoC still
@@ -64,24 +64,41 @@ suspending the WSA881x amps first, or not forcing the master that feeds them.
 
 ## What is still open
 
-1. **The ADSP never sleeps after boot.** Its `qcom_stats/adsp` entry stops a
-   few seconds into boot and never counts again, even with the macros,
-   SoundWire and LPI pin controller suspended and their votes at 0 (checked
-   with the clock trace, see above). Its glink edge carries `pcie_drv` and
-   `mhi_sat`; on Android the ADSP manages the WLAN PCIe link through those, so
-   it may wait for a "PCIe suspended" message nobody sends.
+1. **The ADSP never slept after boot: found, patch 0026.** Its
+   `qcom_stats/adsp` entry stopped the moment the LPASS macros bound (7.2 s
+   into boot; the stats count SoC ticks from power-on, ~5 s before the
+   kernel). Blacklisting modules boot by boot narrowed it to `va_macro`
+   alone. The ADSP answers an LPASS core vote with a client handle that the
+   devote has to send back; mainline q6afe never stored it, so every devote
+   failed (`cmd = 0x100f6 returned error = 0x1` in dmesg) and every
+   `LPASS_HW_MACRO`/`DCODEC` vote stayed held. That is why releasing the votes
+   on the Linux side made no difference. With 0026, the Odin 3 macro patch
+   (votes held only while a macro is runtime-active) and the SoundWire codecs
+   allowed to runtime-suspend (`70-sm8250-handhelds.rules` pins them on), the
+   ADSP sleeps, also through s2idle, and the speakers still work. It saves
+   only ~2 mA by itself (quiet standby, 199 vs 201 mA) and the deep sleep
+   counters stay at 0, so only 0026 is in the tree for now.
 2. **A second blocker outside the ADSP.** With the ADSP stopped
-   (`echo stop > /sys/class/remoteproc/remoteproc2/state`), the QCA6390 fully
-   unpowered (Wi-Fi unloaded, Bluetooth unbound), the video codec unbound and
-   the AOP's `prevent_*` flags cleared, the counters still stayed at 0.
+   (`echo stop > /sys/class/remoteproc/remoteproc2/state`), or asleep with
+   the fixes above, the QCA6390 fully unpowered (Wi-Fi unloaded, Bluetooth
+   unbound), the video codec unbound and the AOP's `prevent_*` flags cleared,
+   the counters still stayed at 0. The APPS sleep set is clean: every BCM,
+   `xo.lvl` and the cx/mx/mmcx levels are 0 at s2idle entry. The SLPI is
+   never booted (its firmware is at `qcom/sm8250/flip2/slpi.mdt`, not the
+   path the DT names); started by hand it runs but never sleeps, so that
+   isn't it either.
 3. **Leftover boot-time votes.** The sm8250 power-domain driver does not
    manage `ddr.lvl` (0x30070) or `qphy.lvl` (0x30090) (`sm8250_rpmhpds[]` has
    no `RPMHPD_QPHY`), so whatever the bootloader voted on them stays in the
-   APPS DRV through every sleep. Putting `qphy.lvl` to 0 in the sleep set
-   (wake set at its top level) **hangs the resume every time**, with the ADSP
-   running or stopped: a PHY that is still powered loses its rail. `ddr.lvl`
-   alone is untested; 0 there may let the AOP turn DDR off and lose the
-   kernel.
+   APPS DRV through every sleep. `ddr.lvl` at 0 in the sleep set (wake set at
+   3) resumes fine but changes nothing. Putting `qphy.lvl` to 0 in the sleep
+   set (wake set at its top level) **hangs the resume every time**: with the
+   ADSP running, stopped, and with the USB controller unbound (UFS unbound by
+   `konkr-sleep`, PCIe in D3cold). The device runs normally with that vote
+   while awake, though the cluster's idle states apply the sleep set too, so
+   the hang comes from the deeper s2idle state. This is the best lead left:
+   either a PHY still needs QREF there, or the SoC gets deeper than before
+   and doesn't come back. The board has no pstore to tell which.
 4. Other candidates that can't be seen from Linux: the display RSC (the
    bootloader's splash votes through it, mainline never drives it) and the
    GPU's own RSC.
@@ -111,6 +128,15 @@ All as root, debugfs mounted.
   it swings by 100+ mA with Steam running; compare parts in a quiet standby
   (`KONKR_STANDBY_KEEP_WIFI=1 /usr/lib/konkr/konkr-standby`, wake with
   SIGUSR1), in on/off/on/off rounds.
+
+- An ARC vote in the sleep set without a kernel rebuild: a small module that
+  looks up the `qcom,sm8250-rpmhpd` device (a child of `apps_rsc`) and calls
+  `rpmh_write()` for `RPMH_WAKE_ONLY_STATE` and `RPMH_SLEEP_STATE` with the
+  address from `cmd_db_read_addr("ddr.lvl")`. ARC values are level indices
+  (the `cmd-db` aux list), not raw levels.
+- Which audio part keeps the ADSP up: a `blacklist` file in
+  `/etc/modprobe.d` and a reboot, watching `qcom_stats/adsp`'s accumulated
+  time while idle. Unloading the audio stack with rmmod wedged the kernel.
 
 ## Pitfalls
 
