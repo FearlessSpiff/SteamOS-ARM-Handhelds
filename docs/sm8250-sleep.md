@@ -91,14 +91,13 @@ suspending the WSA881x amps first, or not forcing the master that feeds them.
    manage `ddr.lvl` (0x30070) or `qphy.lvl` (0x30090) (`sm8250_rpmhpds[]` has
    no `RPMHPD_QPHY`), so whatever the bootloader voted on them stays in the
    APPS DRV through every sleep. `ddr.lvl` at 0 in the sleep set (wake set at
-   3) resumes fine but changes nothing. Putting `qphy.lvl` to 0 in the sleep
-   set (wake set at its top level) **hangs the resume every time**: with the
-   ADSP running, stopped, and with the USB controller unbound (UFS unbound by
-   `konkr-sleep`, PCIe in D3cold). The device runs normally with that vote
-   while awake, though the cluster's idle states apply the sleep set too, so
-   the hang comes from the deeper s2idle state. This is the best lead left:
-   either a PHY still needs QREF there, or the SoC gets deeper than before
-   and doesn't come back. The board has no pstore to tell which.
+   3) resumes fine but changes nothing. `qphy.lvl` is a dead end: the AOP
+   never completes an upward `qphy.lvl` vote from APPS (an active vote of 1
+   times out after 10 s, even on a fresh boot with nothing dropped before),
+   while a vote of 0 is acked at once because it changes nothing. So APPS
+   holds no `qphy.lvl` vote, and the resume hang with 0 in the sleep set came
+   from the wake set's 1, which the RSC waits on forever. A timed-out vote
+   also leaves the TCS busy until the next reboot.
 4. Other candidates that can't be seen from Linux: the display RSC (the
    bootloader's splash votes through it, mainline never drives it) and the
    GPU's own RSC.
