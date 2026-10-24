@@ -3,20 +3,23 @@
 Notes from tracking down the battery drain asleep on a Retroid Pocket Flip 2
 (Visionox panel), 2026-10-23. The kernel fixes below are in
 `external-and-mods/kernel-sm8250/patches` (0017-0025) and
-`dts/sm8250-retroidpocket-common.dtsi.append`. The SoC still does not reach
-deep sleep, so the 865 keeps **standby** as its default sleep mode.
+`dts/sm8250-retroidpocket-common.dtsi.append`. With them, s2idle is the
+default sleep mode on the Retroid 865 boards (RP5, Flip 2, Mini, Mini V2;
+tested on the Flip 2). The other 865 handhelds stay on standby. The SoC still
+does not reach deep sleep, so there is more to gain.
 
 ## Where it stands
 
-| | Standby (default) | s2idle, before | s2idle, with these fixes |
+| | Standby | s2idle, before | s2idle, with these fixes |
 |---|---|---|---|
-| Drain asleep | 1.9-2.5 %/h | ~1.5 %/h (0.67 h) | ~1.9 %/h (2.6 h, 28 → 23 %) |
+| Drain asleep, overnight | 1.9 %/h (12.5 h, 82 → 58 %), 2.3 %/h (11.1 h) | | 1.3 %/h (12.6 h, 67 → 51 %) |
+| Drain asleep, short | | ~1.5 %/h (0.67 h) | ~1.9 %/h (2.6 h at 28 → 23 %) |
 | DDR while asleep | | 768 MHz | 300 MHz |
 | `cxsd` / `aosd` / `ddr` counters | 0 | 0 | 0 |
 
-The battery reports whole percent only, so the figures are rough. About
-1.9 %/h is ~70 mA, which is what an 865 draws with its CPUs off but CX, XO and
-DDR still up.
+The battery reports whole percent only, so short sleeps and low charge give
+rough figures; the overnight ones are the ones to compare. 1.3 %/h is still
+~50 mA, what an 865 draws with its CPUs off but CX, XO and DDR still up.
 
 s2idle itself works: it enters and wakes cleanly, and the controls, Wi-Fi and
 USB-C audio come back. It can be tried with `konkrctl sleep s2idle`
