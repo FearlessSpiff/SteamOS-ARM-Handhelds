@@ -98,9 +98,18 @@ suspending the WSA881x amps first, or not forcing the master that feeds them.
    holds no `qphy.lvl` vote, and the resume hang with 0 in the sleep set came
    from the wake set's 1, which the RSC waits on forever. A timed-out vote
    also leaves the TCS busy until the next reboot.
-4. Other candidates that can't be seen from Linux: the display RSC (the
-   bootloader's splash votes through it, mainline never drives it) and the
-   GPU's own RSC.
+4. **Stock Android does get there.** On the Flip 2's Android 13
+   (`/sys/power/system_sleep/stats` and `/sys/power/rpmh_stats/master_stats`
+   are readable over adb without root), one minute asleep gave cxsd 190,
+   aosd 1232, ddr 192 and DDR self-refresh (`0xd3`) 192. Android also runs
+   the SLPI (it sleeps, island mode too) and takes DDR down to 200 MHz; Linux
+   never goes below 300 MHz, not even asleep with every APPS BCM vote at 0,
+   so some other DRV still votes DDR. Not the display RSC: with its clocks on,
+   both of its TCSes (DRV0 at 0xaf20000, TCS offset 0x1c00) are empty, never
+   written. The APPS RSC's DRV1 (0x18210000) is access-protected: reading it
+   takes the SoC down. Left: the SLPI (never booted here; started by hand it
+   doesn't sleep, perhaps for want of the sensors registry Android hands it)
+   and the GPU's RSC.
 
 Measured with the session frozen and the screen off, the board itself is not
 the drain: the gamepad MCU, touch, Bluetooth and fan each change the battery
