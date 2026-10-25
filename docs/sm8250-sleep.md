@@ -2,7 +2,7 @@
 
 Notes from tracking down the battery drain asleep on a Retroid Pocket Flip 2
 (Visionox panel), 2026-10-23. The kernel fixes below are in
-`external-and-mods/kernel-sm8250/patches` (0017-0026) and
+`external-and-mods/kernel-sm8250/patches` (0017-0029) and
 `dts/sm8250-retroidpocket-common.dtsi.append`. With them, s2idle is the
 default sleep mode on the Retroid 865 boards (RP5, Flip 2, Mini, Mini V2;
 tested on the Flip 2). The other 865 handhelds stay on standby. The SoC still
@@ -41,6 +41,7 @@ the XO vote (`xo.lvl`) at 0.
 | 0021, 0024 | UFS leaks: the lane clocks gained a reference every resume, and `core_clk_unipro` (`keep_link_active`) stayed prepared after every unbind, holding gpll0 and the XO |
 | 0022 | The DSI PHY keeps `disp_cc_mdss_ahb_clk` prepared through sleep |
 | 0025 | Going to sleep warm, the tsens lower-threshold IRQ stormed and woke s2idle at once |
+| 0027-0029 | Not a drain, but s2idle broke plugging: the PMIC's cable, VBUS and CC IRQs aren't wakeup sources and their edges are lost asleep. A charger pulled asleep left the battery at "Full" and the Type-C port as a sink, so USB-C headsets got no power. The fuel gauge now asks the charger each time, and the charger and Type-C drivers read the cable again on resume |
 | camcc (DT) | No camera on these handhelds, but the camera clock controller's critical `cam_cc_gdsc_clk` was a standing XO vote and its `required-opps` held MMCX |
 
 `konkr-sleep` also knew only the 8 Elite's Wi-Fi modules (`ath12k`), so on
