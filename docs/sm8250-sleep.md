@@ -113,7 +113,13 @@ suspending the WSA881x amps first, or not forcing the master that feeds them.
    hangs. With them the audio PD loads both modules and goes idle, but
    CX still doesn't collapse. The ADSP then also hits its watchdog right
    after resume when the QCA6390 powers back on, and the system wedges
-   soon after (hard reset).
+   soon after (hard reset). The SLPI's sensors PD (`hexagonrpcd -s` on
+   `/dev/fastrpc-sdsp`, with Android's registry from `persist` = sda6 and
+   `etc/sensors` from `vendor_a` in `super`, read-only) reads the whole
+   registry and configs. It then asks for an apps-side `sns_registry`
+   interface that `hexagonrpcd` doesn't have, and dies with
+   `SNS_REG_INIT ... sns_registry_sensor.c:94`. It never sleeps, and
+   cxsd stays 0.
    Its proxy votes are released (LCX/LMX off, handover done). Not what it
    waits for: the SLPI's `sleepstate` smp2p entry (Android's DT puts it on
    the SLPI edge only), and the FastRPC userspace Android runs on the ADSP
