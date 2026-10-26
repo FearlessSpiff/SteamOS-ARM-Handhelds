@@ -101,7 +101,19 @@ suspending the WSA881x amps first, or not forcing the master that feeds them.
    audio PD) and the sensors stack on the SLPI. Linux only announces
    the pd-mapper's service locator over QRTR. Not it: `tqftpserv`
    started before a late ADSP start (and before an SLPI start) got no
-   request from either and changed nothing.
+   request from either and changed nothing. The audio PD does wait for a
+   listener: `hexagonrpcd` attached with `FASTRPC_IOCTL_INIT_CREATE_STATIC`
+   "audiopd" (a local `-a` option) gets file requests right away
+   (`fluence_voiceplus_module.so.1`, `mmecns_module.so.1` from the `dsp`
+   partition). Its buffers come from the remote heap (`rflags` 8,
+   `ADSP_MMAP_REMOTE_HEAP_ADDR`), which needs what Android and kodiak
+   have and our DT doesn't: an 8 MB `shared-dma-pool` as the fastrpc
+   node's `memory-region` plus `qcom,vmids = <QCOM_SCM_VMID_LPASS
+   QCOM_SCM_VMID_ADSP_HEAP>`. Without them the maps fail, or the SoC
+   hangs. With them the audio PD loads both modules and goes idle, but
+   CX still doesn't collapse. The ADSP then also hits its watchdog right
+   after resume when the QCA6390 powers back on, and the system wedges
+   soon after (hard reset).
    Its proxy votes are released (LCX/LMX off, handover done). Not what it
    waits for: the SLPI's `sleepstate` smp2p entry (Android's DT puts it on
    the SLPI edge only), and the FastRPC userspace Android runs on the ADSP
