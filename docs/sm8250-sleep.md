@@ -91,7 +91,17 @@ suspending the WSA881x amps first, or not forcing the master that feeds them.
    either. The Flip 2's own ADSP image from Android's `modem` partition
    (`ADSP.HT.5.3-00632`, here we load the generic `ADSP.HT.5.3.c2-00082`)
    boots and plays sound but blocks the same way. Android runs the same
-   firmware and gets there, so Linux misses something the ADSP waits for.
+   firmware and gets there: the Flip 2's stock Android 13 (kernel
+   4.19.157) went from 0 to 13 099 `aosd`, 1 092 `cxsd` and 1 094 `ddr`
+   in ten minutes with the screen off, the last one 607 s long
+   (`/sys/power/system_sleep/stats`, readable over adb without root),
+   with the ADSP, CDSP and SLPI all running. So Linux misses something
+   the ADSP waits for. Android also runs `tftp_server`, `rmt_storage`,
+   `time_daemon`, `adsprpcd` and `adsprpcd_audiopd` (FastRPC on the
+   audio PD) and the sensors stack on the SLPI. Linux only announces
+   the pd-mapper's service locator over QRTR. Not it: `tqftpserv`
+   started before a late ADSP start (and before an SLPI start) got no
+   request from either and changed nothing.
    Its proxy votes are released (LCX/LMX off, handover done). Not what it
    waits for: the SLPI's `sleepstate` smp2p entry (Android's DT puts it on
    the SLPI edge only), and the FastRPC userspace Android runs on the ADSP
