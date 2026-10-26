@@ -79,7 +79,21 @@ suspending the WSA881x amps first, or not forcing the master that feeds them.
    ADSP sleeps, also through s2idle, and the speakers still work. It saves
    only ~2 mA by itself (quiet standby, 199 vs 201 mA) and the deep sleep
    counters stay at 0, so only 0026 is in the tree for now.
-2. **A second blocker outside the ADSP.** With the ADSP stopped
+2. **The booted ADSP is what keeps CX up.** Disabling nodes in the Flip 2's
+   DTB, one boot each, 30 s s2idle: with the GPU, GMU, video, CDSP, SLPI,
+   ADSP and sound card all off, `cxsd`, `aosd` and `ddr` count for the first
+   time on Linux (DDR self-refresh, 200 MHz). The GPU and GMU off alone, or
+   the CDSP and video off alone: still 0. The ADSP and sound card off alone:
+   deep sleep, with the GPU and a running CDSP. The ADSP running with every
+   audio client off (sound card, macros, SoundWire, LPI pinctrl, codecs) and
+   even with its APR node off, so nothing on Linux talks to it: 0, though the
+   ADSP itself power-collapses. Stopping it after boot doesn't release it
+   either. The Flip 2's own ADSP image from Android's `modem` partition
+   (`ADSP.HT.5.3-00632`, here we load the generic `ADSP.HT.5.3.c2-00082`)
+   boots and plays sound but blocks the same way. Android runs the same
+   firmware and gets there, so Linux misses something the ADSP waits for.
+   Its proxy votes are released (LCX/LMX off, handover done).
+   Earlier, before the above: with the ADSP stopped
    (`echo stop > /sys/class/remoteproc/remoteproc2/state`), or asleep with
    the fixes above, the QCA6390 fully unpowered (Wi-Fi unloaded, Bluetooth
    unbound), the video codec unbound and the AOP's `prevent_*` flags cleared,
