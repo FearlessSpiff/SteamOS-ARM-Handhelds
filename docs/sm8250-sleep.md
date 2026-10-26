@@ -97,7 +97,11 @@ suspending the WSA881x amps first, or not forcing the master that feeds them.
    the SLPI edge only), and the FastRPC userspace Android runs on the ADSP
    (`adsprpcd`; the channel is already in our DT, and `hexagonrpcd` serving
    the `dsp` partition got no request from the ADSP in a minute; running it
-   across s2idle hung the resume).
+   across s2idle hung the resume). The AOP won't say what the ADSP votes:
+   the later SoCs' per-DRV DDR vote query (QMP `{class: ddr, res:
+   drvs_ddr_votes}`) is accepted but writes nothing to the stats MSG RAM
+   (0xc3f0000; aosd/cxsd/ddr records at 0x48/0x68/0x88, DDR stats at 0xb8,
+   three unused type 2 entries at 0x1d0-0x1f0).
    Earlier, before the above: with the ADSP stopped
    (`echo stop > /sys/class/remoteproc/remoteproc2/state`), or asleep with
    the fixes above, the QCA6390 fully unpowered (Wi-Fi unloaded, Bluetooth
