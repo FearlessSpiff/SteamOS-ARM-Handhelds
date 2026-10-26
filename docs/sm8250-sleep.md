@@ -102,6 +102,16 @@ suspending the WSA881x amps first, or not forcing the master that feeds them.
    drvs_ddr_votes}`) is accepted but writes nothing to the stats MSG RAM
    (0xc3f0000; aosd/cxsd/ddr records at 0x48/0x68/0x88, DDR stats at 0xb8,
    three unused type 2 entries at 0x1d0-0x1f0).
+   The RP5 does get there: [mihaivladan/rp5-ufs-kernel-test](https://github.com/mihaivladan/rp5-ufs-kernel-test)
+   reports 99.999 % AOSD/CXSD/DDR with the ADSP running and audio up (the
+   RP5's Android ADSP image, a q6afe handle fix like 0026, the 7.3 LPASS
+   macro PM-clock conversions, the ADSP started from sysfs after boot, and
+   no CDSP, SLPI, venus or QCE in the DT). On the Flip 2 the same set still
+   blocks: Android's ADSP, every q6afe clock and LPASS vote at enable count
+   0 with the SoundWire codecs, macros and LPI pinctrl runtime-suspended, the
+   CDSP, venus, videocc and QCE disabled, and the ADSP started late, all
+   0. Their AOP probing also found no readable per-client vote (direct
+   ARC/DDR register reads reset the SoC).
    Earlier, before the above: with the ADSP stopped
    (`echo stop > /sys/class/remoteproc/remoteproc2/state`), or asleep with
    the fixes above, the QCA6390 fully unpowered (Wi-Fi unloaded, Bluetooth
