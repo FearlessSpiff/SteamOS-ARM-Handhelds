@@ -111,7 +111,15 @@ suspending the WSA881x amps first, or not forcing the master that feeds them.
    0 with the SoundWire codecs, macros and LPI pinctrl runtime-suspended, the
    CDSP, venus, videocc and QCE disabled, and the ADSP started late, all
    0. Their AOP probing also found no readable per-client vote (direct
-   ARC/DDR register reads reset the SoC).
+   ARC/DDR register reads reset the SoC). Their other pieces don't apply
+   either. Their RPMh regulator sleep-set patches only act on
+   `regulator-state-mem`, which their DT doesn't set. LCX and LMX at 0 in
+   both APPS sets (their all-states rpmhpd patch allows that): 0 over two
+   hours. The ADSP's `pcie_drv` channel answers Qualcomm's v1 commands
+   (ACK, status 0), but binding it, a DISABLE, or an ENABLE handoff of RC0
+   before suspend: still 0. The ENABLE just makes the ADSP wake often to
+   watch the link. Telling the AOP `{class: image, res: load_state, name:
+   adsp, val: off}` with the ADSP still running: 0.
    Earlier, before the above: with the ADSP stopped
    (`echo stop > /sys/class/remoteproc/remoteproc2/state`), or asleep with
    the fixes above, the QCA6390 fully unpowered (Wi-Fi unloaded, Bluetooth
