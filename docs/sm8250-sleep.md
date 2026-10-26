@@ -92,7 +92,12 @@ suspending the WSA881x amps first, or not forcing the master that feeds them.
    (`ADSP.HT.5.3-00632`, here we load the generic `ADSP.HT.5.3.c2-00082`)
    boots and plays sound but blocks the same way. Android runs the same
    firmware and gets there, so Linux misses something the ADSP waits for.
-   Its proxy votes are released (LCX/LMX off, handover done).
+   Its proxy votes are released (LCX/LMX off, handover done). Not what it
+   waits for: the SLPI's `sleepstate` smp2p entry (Android's DT puts it on
+   the SLPI edge only), and the FastRPC userspace Android runs on the ADSP
+   (`adsprpcd`; the channel is already in our DT, and `hexagonrpcd` serving
+   the `dsp` partition got no request from the ADSP in a minute; running it
+   across s2idle hung the resume).
    Earlier, before the above: with the ADSP stopped
    (`echo stop > /sys/class/remoteproc/remoteproc2/state`), or asleep with
    the fixes above, the QCA6390 fully unpowered (Wi-Fi unloaded, Bluetooth
